@@ -31,8 +31,10 @@ def pytest_configure(config):
         config.pluginmanager.register(config._resultlog)
 
         from _pytest.deprecated import RESULT_LOG
+        from _pytest.warning_types import RemovedInPytest4Warning
+        from _pytest.warnings import _issue_config_warning
 
-        config.warn("C1", RESULT_LOG)
+        _issue_config_warning(RemovedInPytest4Warning(RESULT_LOG), config)
 
 
 def pytest_unconfigure(config):
@@ -68,7 +70,6 @@ def generic_path(item):
 
 
 class ResultLog(object):
-
     def __init__(self, config, logfile):
         self.config = config
         self.logfile = logfile  # preferably line buffered

@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, print_function
 import inspect
+import pprint
 import sys
 import traceback
 from inspect import CO_VARARGS, CO_VARKEYWORDS
@@ -10,6 +11,7 @@ from weakref import ref
 from _pytest.compat import _PY2, _PY3, PY35, safe_str
 from six import text_type
 import py
+import six
 
 builtin_repr = repr
 
@@ -127,7 +129,7 @@ class Frame(object):
         """
         f_locals = self.f_locals.copy()
         f_locals.update(vars)
-        py.builtin.exec_(code, self.f_globals, f_locals)
+        six.exec_(code, self.f_globals, f_locals)
 
     def repr(self, object):
         """ return a 'safe' (non-recursive, one-line) string repr for 'object'
@@ -274,6 +276,7 @@ class Traceback(list):
     """ Traceback objects encapsulate and offer higher level
         access to Traceback entries.
     """
+
     Entry = TracebackEntry
 
     def __init__(self, tb, excinfo=None):
@@ -382,8 +385,11 @@ class ExceptionInfo(object):
     """ wraps sys.exc_info() objects and offers
         help for navigating the traceback.
     """
+
     _striptext = ""
-    _assert_start_repr = "AssertionError(u'assert " if _PY2 else "AssertionError('assert "
+    _assert_start_repr = (
+        "AssertionError(u'assert " if _PY2 else "AssertionError('assert "
+    )
 
     def __init__(self, tup=None, exprinfo=None):
         import _pytest._code
@@ -424,7 +430,7 @@ class ExceptionInfo(object):
         text = text.rstrip()
         if tryshort:
             if text.startswith(self._striptext):
-                text = text[len(self._striptext):]
+                text = text[len(self._striptext) :]
         return text
 
     def errisinstance(self, exc):
@@ -444,6 +450,7 @@ class ExceptionInfo(object):
         abspath=False,
         tbfilter=True,
         funcargs=False,
+        truncate_locals=True,
     ):
         """ return str()able representation of this exception info.
             showlocals: show locals per traceback entry
@@ -468,6 +475,7 @@ class ExceptionInfo(object):
             abspath=abspath,
             tbfilter=tbfilter,
             funcargs=funcargs,
+            truncate_locals=truncate_locals,
         )
         return fmt.repr_excinfo(self)
 
@@ -497,6 +505,7 @@ class ExceptionInfo(object):
 @attr.s
 class FormattedExcinfo(object):
     """ presenting information about failing Functions and Generators. """
+
     # for traceback entries
     flow_marker = ">"
     fail_marker = "E"
@@ -506,6 +515,7 @@ class FormattedExcinfo(object):
     abspath = attr.ib(default=True)
     tbfilter = attr.ib(default=True)
     funcargs = attr.ib(default=False)
+    truncate_locals = attr.ib(default=True)
     astcache = attr.ib(default=attr.Factory(dict), init=False, repr=False)
 
     def _getindent(self, source):
@@ -556,7 +566,7 @@ class FormattedExcinfo(object):
             for line in source.lines[:line_index]:
                 lines.append(space_prefix + line)
             lines.append(self.flow_marker + "   " + source.lines[line_index])
-            for line in source.lines[line_index + 1:]:
+            for line in source.lines[line_index + 1 :]:
                 lines.append(space_prefix + line)
         if excinfo is not None:
             indent = 4 if short else self._getindent(source)
@@ -588,7 +598,10 @@ class FormattedExcinfo(object):
                     # This formatting could all be handled by the
                     # _repr() function, which is only reprlib.Repr in
                     # disguise, so is very configurable.
-                    str_repr = self._saferepr(value)
+                    if self.truncate_locals:
+                        str_repr = self._saferepr(value)
+                    else:
+                        str_repr = pprint.pformat(value)
                     # if len(str_repr) < 70 or not isinstance(value,
                     #                            (list, tuple, dict)):
                     lines.append("%-10s = %s" % (name, str_repr))
@@ -691,7 +704,7 @@ class FormattedExcinfo(object):
         else:
             if recursionindex is not None:
                 extraline = "!!! Recursion detected (same locals & position)"
-                traceback = traceback[:recursionindex + 1]
+                traceback = traceback[: recursionindex + 1]
             else:
                 extraline = None
 
@@ -707,7 +720,9 @@ class FormattedExcinfo(object):
             repr_chain = []
             e = excinfo.value
             descr = None
-            while e is not None:
+            seen = set()
+            while e is not None and id(e) not in seen:
+                seen.add(id(e))
                 if excinfo:
                     reprtraceback = self.repr_traceback(excinfo)
                     reprcrash = excinfo._getreprcrash()
@@ -722,15 +737,19 @@ class FormattedExcinfo(object):
                 repr_chain += [(reprtraceback, reprcrash, descr)]
                 if e.__cause__ is not None:
                     e = e.__cause__
-                    excinfo = ExceptionInfo(
-                        (type(e), e, e.__traceback__)
-                    ) if e.__traceback__ else None
+                    excinfo = (
+                        ExceptionInfo((type(e), e, e.__traceback__))
+                        if e.__traceback__
+                        else None
+                    )
                     descr = "The above exception was the direct cause of the following exception:"
-                elif (e.__context__ is not None and not e.__suppress_context__):
+                elif e.__context__ is not None and not e.__suppress_context__:
                     e = e.__context__
-                    excinfo = ExceptionInfo(
-                        (type(e), e, e.__traceback__)
-                    ) if e.__traceback__ else None
+                    excinfo = (
+                        ExceptionInfo((type(e), e, e.__traceback__))
+                        if e.__traceback__
+                        else None
+                    )
                     descr = "During handling of the above exception, another exception occurred:"
                 else:
                     e = None
@@ -739,7 +758,6 @@ class FormattedExcinfo(object):
 
 
 class TerminalRepr(object):
-
     def __str__(self):
         s = self.__unicode__()
         if _PY2:
@@ -759,7 +777,6 @@ class TerminalRepr(object):
 
 
 class ExceptionRepr(TerminalRepr):
-
     def __init__(self):
         self.sections = []
 
@@ -773,7 +790,6 @@ class ExceptionRepr(TerminalRepr):
 
 
 class ExceptionChainRepr(ExceptionRepr):
-
     def __init__(self, chain):
         super(ExceptionChainRepr, self).__init__()
         self.chain = chain
@@ -792,7 +808,6 @@ class ExceptionChainRepr(ExceptionRepr):
 
 
 class ReprExceptionInfo(ExceptionRepr):
-
     def __init__(self, reprtraceback, reprcrash):
         super(ReprExceptionInfo, self).__init__()
         self.reprtraceback = reprtraceback
@@ -831,7 +846,6 @@ class ReprTraceback(TerminalRepr):
 
 
 class ReprTracebackNative(ReprTraceback):
-
     def __init__(self, tblines):
         self.style = "native"
         self.reprentries = [ReprEntryNative(tblines)]
@@ -885,7 +899,6 @@ class ReprEntry(TerminalRepr):
 
 
 class ReprFileLocation(TerminalRepr):
-
     def __init__(self, path, lineno, message):
         self.path = str(path)
         self.lineno = lineno
@@ -903,7 +916,6 @@ class ReprFileLocation(TerminalRepr):
 
 
 class ReprLocals(TerminalRepr):
-
     def __init__(self, lines):
         self.lines = lines
 
@@ -913,7 +925,6 @@ class ReprLocals(TerminalRepr):
 
 
 class ReprFuncArgs(TerminalRepr):
-
     def __init__(self, args):
         self.args = args
 

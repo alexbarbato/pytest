@@ -8,11 +8,11 @@ import os
 import collections
 import warnings
 from textwrap import dedent
-from itertools import count
 
 
 import py
 import six
+from _pytest.main import FSHookProxy
 from _pytest.mark import MarkerError
 from _pytest.config import hookimpl
 
@@ -37,10 +37,15 @@ from _pytest.compat import (
     getlocation,
     enum,
     get_default_arg_names,
+    getimfunc,
 )
 from _pytest.outcomes import fail
-from _pytest.mark.structures import transfer_markers, get_unpacked_marks
-
+from _pytest.mark.structures import (
+    transfer_markers,
+    get_unpacked_marks,
+    normalize_mark_list,
+)
+from _pytest.warning_types import RemovedInPytest4Warning, PytestWarning
 
 # relative paths that we use to filter traceback entries from appearing to the user;
 # see filter_traceback
@@ -69,13 +74,12 @@ def filter_traceback(entry):
     # entry.path might point to a non-existing file, in which case it will
     # also return a str object. see #1133
     p = py.path.local(entry.path)
-    return not p.relto(_pluggy_dir) and not p.relto(_pytest_dir) and not p.relto(
-        _py_dir
+    return (
+        not p.relto(_pluggy_dir) and not p.relto(_pytest_dir) and not p.relto(_py_dir)
     )
 
 
 def pyobj_property(name):
-
     def get(self):
         node = self.getparent(getattr(__import__("pytest"), name))
         if node is not None:
@@ -170,13 +174,14 @@ def pytest_configure(config):
         "or a list of tuples of values if argnames specifies multiple names. "
         "Example: @parametrize('arg1', [1,2]) would lead to two calls of the "
         "decorated test function, one with arg1=1 and another with arg1=2."
-        "see http://pytest.org/latest/parametrize.html for more info and "
-        "examples.",
+        "see https://docs.pytest.org/en/latest/parametrize.html for more info "
+        "and examples.",
     )
     config.addinivalue_line(
         "markers",
         "usefixtures(fixturename1, fixturename2, ...): mark tests as needing "
-        "all of the specified fixtures. see http://pytest.org/latest/fixture.html#usefixtures ",
+        "all of the specified fixtures. see "
+        "https://docs.pytest.org/en/latest/fixture.html#usefixtures ",
     )
 
 
@@ -198,16 +203,22 @@ def pytest_collect_file(path, parent):
     ext = path.ext
     if ext == ".py":
         if not parent.session.isinitpath(path):
-            for pat in parent.config.getini("python_files"):
-                if path.fnmatch(pat):
-                    break
-            else:
+            if not path_matches_patterns(
+                path, parent.config.getini("python_files") + ["__init__.py"]
+            ):
                 return
         ihook = parent.session.gethookproxy(path)
         return ihook.pytest_pycollect_makemodule(path=path, parent=parent)
 
 
+def path_matches_patterns(path, patterns):
+    """Returns True if the given py.path.local matches one of the patterns in the list of globs given"""
+    return any(path.fnmatch(pattern) for pattern in patterns)
+
+
 def pytest_pycollect_makemodule(path, parent):
+    if path.basename == "__init__.py":
+        return Package(path, parent)
     return Module(path, parent)
 
 
@@ -229,9 +240,14 @@ def pytest_pycollect_makeitem(collector, name, obj):
         # or a funtools.wrapped.
         # We musn't if it's been wrapped with mock.patch (python 2 only)
         if not (isfunction(obj) or isfunction(get_real_func(obj))):
-            collector.warn(
-                code="C2",
-                message="cannot collect %r because it is not a function." % name,
+            filename, lineno = getfslineno(obj)
+            warnings.warn_explicit(
+                message=PytestWarning(
+                    "cannot collect %r because it is not a function." % name
+                ),
+                category=None,
+                filename=str(filename),
+                lineno=lineno + 1,
             )
         elif getattr(obj, "__test__", True):
             if is_generator(obj):
@@ -258,7 +274,6 @@ class PyobjMixin(PyobjContext):
         super(PyobjMixin, self).__init__(*k, **kw)
 
     def obj():
-
         def fget(self):
             obj = getattr(self, "_obj", None)
             if obj is None:
@@ -320,7 +335,6 @@ class PyobjMixin(PyobjContext):
 
 
 class PyCollector(PyobjMixin, nodes.Collector):
-
     def funcnamefilter(self, name):
         return self._matches_prefix_or_glob_option("python_functions", name)
 
@@ -341,11 +355,6 @@ class PyCollector(PyobjMixin, nodes.Collector):
             if isinstance(obj, staticmethod):
                 # static methods need to be unwrapped
                 obj = safe_getattr(obj, "__func__", False)
-                if obj is False:
-                    # Python 2.6 wraps in a different way that we won't try to handle
-                    msg = "cannot collect static method %r because it is not a function"
-                    self.warn(code="C2", message=msg % name)
-                    return False
             return (
                 safe_getattr(obj, "__call__", False)
                 and fixtures.getfixturemarker(obj) is None
@@ -438,6 +447,11 @@ class PyCollector(PyobjMixin, nodes.Collector):
             # add funcargs() as fixturedefs to fixtureinfo.arg2fixturedefs
             fixtures.add_funcarg_pseudo_fixture_def(self, metafunc, fm)
 
+            # add_funcarg_pseudo_fixture_def may have shadowed some fixtures
+            # with direct parametrization, so make sure we update what the
+            # function really needs.
+            fixtureinfo.prune_dependency_tree()
+
             for callspec in metafunc._calls:
                 subname = "%s[%s]" % (name, callspec.id)
                 yield Function(
@@ -487,9 +501,11 @@ class Module(nodes.File, PyCollector):
             exc_info = ExceptionInfo()
             if self.config.getoption("verbose") < 2:
                 exc_info.traceback = exc_info.traceback.filter(filter_traceback)
-            exc_repr = exc_info.getrepr(
-                style="short"
-            ) if exc_info.traceback else exc_info.exconly()
+            exc_repr = (
+                exc_info.getrepr(style="short")
+                if exc_info.traceback
+                else exc_info.exconly()
+            )
             formatted_tb = safe_str(exc_repr)
             raise self.CollectError(
                 "ImportError while importing test module '{fspath}'.\n"
@@ -521,6 +537,92 @@ class Module(nodes.File, PyCollector):
             teardown_module = _get_xunit_setup_teardown(self.obj, "teardown_module")
         if teardown_module is not None:
             self.addfinalizer(teardown_module)
+
+
+class Package(Module):
+    def __init__(self, fspath, parent=None, config=None, session=None, nodeid=None):
+        session = parent.session
+        nodes.FSCollector.__init__(
+            self, fspath, parent=parent, config=config, session=session, nodeid=nodeid
+        )
+        self.name = fspath.dirname
+        self.trace = session.trace
+        self._norecursepatterns = session._norecursepatterns
+        self.fspath = fspath
+
+    def _recurse(self, path):
+        ihook = self.gethookproxy(path.dirpath())
+        if ihook.pytest_ignore_collect(path=path, config=self.config):
+            return False
+        for pat in self._norecursepatterns:
+            if path.check(fnmatch=pat):
+                return False
+        ihook = self.gethookproxy(path)
+        ihook.pytest_collect_directory(path=path, parent=self)
+        return True
+
+    def gethookproxy(self, fspath):
+        # check if we have the common case of running
+        # hooks with all conftest.py filesall conftest.py
+        pm = self.config.pluginmanager
+        my_conftestmodules = pm._getconftestmodules(fspath)
+        remove_mods = pm._conftest_plugins.difference(my_conftestmodules)
+        if remove_mods:
+            # one or more conftests are not in use at this fspath
+            proxy = FSHookProxy(fspath, pm, remove_mods)
+        else:
+            # all plugis are active for this fspath
+            proxy = self.config.hook
+        return proxy
+
+    def _collectfile(self, path):
+        ihook = self.gethookproxy(path)
+        if not self.isinitpath(path):
+            if ihook.pytest_ignore_collect(path=path, config=self.config):
+                return ()
+        return ihook.pytest_collect_file(path=path, parent=self)
+
+    def isinitpath(self, path):
+        return path in self.session._initialpaths
+
+    def collect(self):
+        # XXX: HACK!
+        # Before starting to collect any files from this package we need
+        # to cleanup the duplicate paths added by the session's collect().
+        # Proper fix is to not track these as duplicates in the first place.
+        for path in list(self.session.config.pluginmanager._duplicatepaths):
+            # if path.parts()[:len(self.fspath.dirpath().parts())] == self.fspath.dirpath().parts():
+            if path.dirname.startswith(self.name):
+                self.session.config.pluginmanager._duplicatepaths.remove(path)
+
+        this_path = self.fspath.dirpath()
+        init_module = this_path.join("__init__.py")
+        if init_module.check(file=1) and path_matches_patterns(
+            init_module, self.config.getini("python_files")
+        ):
+            yield Module(init_module, self)
+        pkg_prefixes = set()
+        for path in this_path.visit(rec=self._recurse, bf=True, sort=True):
+            # we will visit our own __init__.py file, in which case we skip it
+            skip = False
+            if path.basename == "__init__.py" and path.dirpath() == this_path:
+                continue
+
+            for pkg_prefix in pkg_prefixes:
+                if (
+                    pkg_prefix in path.parts()
+                    and pkg_prefix.join("__init__.py") != path
+                ):
+                    skip = True
+
+            if skip:
+                continue
+
+            if path.isdir() and path.join("__init__.py").check(file=1):
+                pkg_prefixes.add(path)
+
+            for x in self._collectfile(path):
+                yield x
 
 
 def _get_xunit_setup_teardown(holder, attr_name, param_obj=None):
@@ -561,16 +663,18 @@ class Class(PyCollector):
             return []
         if hasinit(self.obj):
             self.warn(
-                "C1",
-                "cannot collect test class %r because it has a "
-                "__init__ constructor" % self.obj.__name__,
+                PytestWarning(
+                    "cannot collect test class %r because it has a "
+                    "__init__ constructor" % self.obj.__name__
+                )
             )
             return []
         elif hasnew(self.obj):
             self.warn(
-                "C1",
-                "cannot collect test class %r because it has a "
-                "__new__ constructor" % self.obj.__name__,
+                PytestWarning(
+                    "cannot collect test class %r because it has a "
+                    "__new__ constructor" % self.obj.__name__
+                )
             )
             return []
         return [self._getcustomclass("Instance")(name="()", parent=self)]
@@ -578,14 +682,12 @@ class Class(PyCollector):
     def setup(self):
         setup_class = _get_xunit_func(self.obj, "setup_class")
         if setup_class is not None:
-            setup_class = getattr(setup_class, "im_func", setup_class)
-            setup_class = getattr(setup_class, "__func__", setup_class)
+            setup_class = getimfunc(setup_class)
             setup_class(self.obj)
 
         fin_class = getattr(self.obj, "teardown_class", None)
         if fin_class is not None:
-            fin_class = getattr(fin_class, "im_func", fin_class)
-            fin_class = getattr(fin_class, "__func__", fin_class)
+            fin_class = getimfunc(fin_class)
             self.addfinalizer(lambda: fin_class(self.obj))
 
 
@@ -661,7 +763,7 @@ class FunctionMixin(PyobjMixin):
     def _repr_failure_py(self, excinfo, style="long"):
         if excinfo.errisinstance(fail.Exception):
             if not excinfo.value.pytrace:
-                return py._builtin._totext(excinfo.value)
+                return six.text_type(excinfo.value)
         return super(FunctionMixin, self)._repr_failure_py(excinfo, style=style)
 
     def repr_failure(self, excinfo, outerr=None):
@@ -673,7 +775,6 @@ class FunctionMixin(PyobjMixin):
 
 
 class Generator(FunctionMixin, PyCollector):
-
     def collect(self):
         # test generators are seen as collectors but they also
         # invoke setup/teardown on popular request
@@ -699,7 +800,7 @@ class Generator(FunctionMixin, PyCollector):
                 )
             seen[name] = True
             values.append(self.Function(name, self, args=args, callobj=call))
-        self.warn("C1", deprecated.YIELD_TESTS)
+        self.warn(deprecated.YIELD_TESTS)
         return values
 
     def getcallargs(self, obj):
@@ -728,20 +829,18 @@ def hasnew(obj):
 
 
 class CallSpec2(object):
-
     def __init__(self, metafunc):
         self.metafunc = metafunc
         self.funcargs = {}
         self._idlist = []
         self.params = {}
         self._globalid = NOTSET
-        self._globalid_args = set()
         self._globalparam = NOTSET
         self._arg2scopenum = {}  # used for sorting parametrized resources
         self.marks = []
         self.indices = {}
 
-    def copy(self, metafunc):
+    def copy(self):
         cs = CallSpec2(self.metafunc)
         cs.funcargs.update(self.funcargs)
         cs.params.update(self.params)
@@ -750,7 +849,6 @@ class CallSpec2(object):
         cs._arg2scopenum.update(self._arg2scopenum)
         cs._idlist = list(self._idlist)
         cs._globalid = self._globalid
-        cs._globalid_args = self._globalid_args
         cs._globalparam = self._globalparam
         return cs
 
@@ -778,7 +876,7 @@ class CallSpec2(object):
             self.indices[arg] = param_index
             self._arg2scopenum[arg] = scopenum
         self._idlist.append(id)
-        self.marks.extend(marks)
+        self.marks.extend(normalize_mark_list(marks))
 
     def setall(self, funcargs, id, param):
         for x in funcargs:
@@ -802,12 +900,13 @@ class Metafunc(fixtures.FuncargnamesCompatAttr):
     """
 
     def __init__(self, definition, fixtureinfo, config, cls=None, module=None):
-        #: access to the :class:`_pytest.config.Config` object for the test session
         assert (
             isinstance(definition, FunctionDefinition)
             or type(definition).__name__ == "DefinitionMock"
         )
         self.definition = definition
+
+        #: access to the :class:`_pytest.config.Config` object for the test session
         self.config = config
 
         #: the module object where the test function is defined in.
@@ -866,46 +965,59 @@ class Metafunc(fixtures.FuncargnamesCompatAttr):
         """
         from _pytest.fixtures import scope2index
         from _pytest.mark import ParameterSet
-        from py.io import saferepr
 
         argnames, parameters = ParameterSet._for_parametrize(
-            argnames, argvalues, self.function, self.config
+            argnames,
+            argvalues,
+            self.function,
+            self.config,
+            function_definition=self.definition,
         )
         del argvalues
-        default_arg_names = set(get_default_arg_names(self.function))
 
         if scope is None:
             scope = _find_parametrized_scope(argnames, self._arg2fixturedefs, indirect)
 
-        scopenum = scope2index(scope, descr="call to {}".format(self.parametrize))
-        valtypes = {}
-        for arg in argnames:
-            if arg not in self.fixturenames:
-                if arg in default_arg_names:
-                    raise ValueError(
-                        "%r already takes an argument %r with a default value"
-                        % (self.function, arg)
-                    )
-                else:
-                    if isinstance(indirect, (tuple, list)):
-                        name = "fixture" if arg in indirect else "argument"
-                    else:
-                        name = "fixture" if indirect else "argument"
-                    raise ValueError("%r uses no %s %r" % (self.function, name, arg))
+        self._validate_if_using_arg_names(argnames, indirect)
 
-        if indirect is True:
-            valtypes = dict.fromkeys(argnames, "params")
-        elif indirect is False:
-            valtypes = dict.fromkeys(argnames, "funcargs")
-        elif isinstance(indirect, (tuple, list)):
-            valtypes = dict.fromkeys(argnames, "funcargs")
-            for arg in indirect:
-                if arg not in argnames:
-                    raise ValueError(
-                        "indirect given to %r: fixture %r doesn't exist"
-                        % (self.function, arg)
-                    )
-                valtypes[arg] = "params"
+        arg_values_types = self._resolve_arg_value_types(argnames, indirect)
+
+        ids = self._resolve_arg_ids(argnames, ids, parameters, item=self.definition)
+
+        scopenum = scope2index(scope, descr="call to {}".format(self.parametrize))
+
+        # create the new calls: if we are parametrize() multiple times (by applying the decorator
+        # more than once) then we accumulate those calls generating the cartesian product
+        # of all calls
+        newcalls = []
+        for callspec in self._calls or [CallSpec2(self)]:
+            for param_index, (param_id, param_set) in enumerate(zip(ids, parameters)):
+                newcallspec = callspec.copy()
+                newcallspec.setmulti2(
+                    arg_values_types,
+                    argnames,
+                    param_set.values,
+                    param_id,
+                    param_set.marks,
+                    scopenum,
+                    param_index,
+                )
+                newcalls.append(newcallspec)
+        self._calls = newcalls
+
+    def _resolve_arg_ids(self, argnames, ids, parameters, item):
+        """Resolves the actual ids for the given argnames, based on the ``ids`` parameter given
+        to ``parametrize``.
+
+        :param List[str] argnames: list of argument names passed to ``parametrize()``.
+        :param ids: the ids parameter of the parametrized call (see docs).
+        :param List[ParameterSet] parameters: the list of parameter values, same size as ``argnames``.
+        :param Item item: the item that generated this parametrized call.
+        :rtype: List[str]
+        :return: the list of ids for each argname given
+        """
+        from py.io import saferepr
+
         idfn = None
         if callable(ids):
             idfn = ids
@@ -921,30 +1033,58 @@ class Metafunc(fixtures.FuncargnamesCompatAttr):
                     raise ValueError(
                         msg % (saferepr(id_value), type(id_value).__name__)
                     )
-        ids = idmaker(argnames, parameters, idfn, ids, self.config)
-        newcalls = []
-        for callspec in self._calls or [CallSpec2(self)]:
-            elements = zip(ids, parameters, count())
-            for a_id, param, param_index in elements:
-                if len(param.values) != len(argnames):
+        ids = idmaker(argnames, parameters, idfn, ids, self.config, item=item)
+        return ids
+
+    def _resolve_arg_value_types(self, argnames, indirect):
+        """Resolves if each parametrized argument must be considered a parameter to a fixture or a "funcarg"
+        to the function, based on the ``indirect`` parameter of the parametrized() call.
+
+        :param List[str] argnames: list of argument names passed to ``parametrize()``.
+        :param indirect: same ``indirect`` parameter of ``parametrize()``.
+        :rtype: Dict[str, str]
+            A dict mapping each arg name to either:
+            * "params" if the argname should be the parameter of a fixture of the same name.
+            * "funcargs" if the argname should be a parameter to the parametrized test function.
+        """
+        valtypes = {}
+        if indirect is True:
+            valtypes = dict.fromkeys(argnames, "params")
+        elif indirect is False:
+            valtypes = dict.fromkeys(argnames, "funcargs")
+        elif isinstance(indirect, (tuple, list)):
+            valtypes = dict.fromkeys(argnames, "funcargs")
+            for arg in indirect:
+                if arg not in argnames:
                     raise ValueError(
-                        'In "parametrize" the number of values ({}) must be '
-                        "equal to the number of names ({})".format(
-                            param.values, argnames
-                        )
+                        "indirect given to %r: fixture %r doesn't exist"
+                        % (self.function, arg)
                     )
-                newcallspec = callspec.copy(self)
-                newcallspec.setmulti2(
-                    valtypes,
-                    argnames,
-                    param.values,
-                    a_id,
-                    param.marks,
-                    scopenum,
-                    param_index,
-                )
-                newcalls.append(newcallspec)
-        self._calls = newcalls
+                valtypes[arg] = "params"
+        return valtypes
+
+    def _validate_if_using_arg_names(self, argnames, indirect):
+        """
+        Check if all argnames are being used, by default values, or directly/indirectly.
+
+        :param List[str] argnames: list of argument names passed to ``parametrize()``.
+        :param indirect: same ``indirect`` parameter of ``parametrize()``.
+        :raise ValueError: if validation fails.
+        """
+        default_arg_names = set(get_default_arg_names(self.function))
+        for arg in argnames:
+            if arg not in self.fixturenames:
+                if arg in default_arg_names:
+                    raise ValueError(
+                        "%r already takes an argument %r with a default value"
+                        % (self.function, arg)
+                    )
+                else:
+                    if isinstance(indirect, (tuple, list)):
+                        name = "fixture" if arg in indirect else "argument"
+                    else:
+                        name = "fixture" if indirect else "argument"
+                    raise ValueError("%r uses no %s %r" % (self.function, name, arg))
 
     def addcall(self, funcargs=None, id=NOTSET, param=NOTSET):
         """ Add a new call to the underlying test function during the collection phase of a test run.
@@ -966,10 +1106,8 @@ class Metafunc(fixtures.FuncargnamesCompatAttr):
         :arg param: a parameter which will be exposed to a later fixture function
             invocation through the ``request.param`` attribute.
         """
-        if self.config:
-            self.config.warn(
-                "C1", message=deprecated.METAFUNC_ADD_CALL, fslocation=None
-            )
+        warnings.warn(deprecated.METAFUNC_ADD_CALL, stacklevel=2)
+
         assert funcargs is None or isinstance(funcargs, dict)
         if funcargs is not None:
             for name in funcargs:
@@ -1003,13 +1141,18 @@ def _find_parametrized_scope(argnames, arg2fixturedefs, indirect):
     """
     from _pytest.fixtures import scopes
 
-    indirect_as_list = isinstance(indirect, (list, tuple))
-    all_arguments_are_fixtures = indirect is True or indirect_as_list and len(
-        indirect
-    ) == argnames
+    if isinstance(indirect, (list, tuple)):
+        all_arguments_are_fixtures = len(indirect) == len(argnames)
+    else:
+        all_arguments_are_fixtures = bool(indirect)
+
     if all_arguments_are_fixtures:
         fixturedefs = arg2fixturedefs or {}
-        used_scopes = [fixturedef[0].scope for name, fixturedef in fixturedefs.items()]
+        used_scopes = [
+            fixturedef[0].scope
+            for name, fixturedef in fixturedefs.items()
+            if name in argnames
+        ]
         if used_scopes:
             # Takes the most narrow scope from used fixtures
             for scope in reversed(scopes):
@@ -1019,20 +1162,20 @@ def _find_parametrized_scope(argnames, arg2fixturedefs, indirect):
     return "function"
 
 
-def _idval(val, argname, idx, idfn, config=None):
+def _idval(val, argname, idx, idfn, item, config):
     if idfn:
         s = None
         try:
             s = idfn(val)
-        except Exception:
+        except Exception as e:
             # See issue https://github.com/pytest-dev/pytest/issues/2169
-            import warnings
-
-            msg = "Raised while trying to determine id of parameter %s at position %d." % (
-                argname, idx
+            msg = (
+                "While trying to determine id of parameter {} at position "
+                "{} the following exception was raised:\n".format(argname, idx)
             )
-            msg += "\nUpdate your code as this will raise an error in pytest-4.0."
-            warnings.warn(msg, DeprecationWarning)
+            msg += "  {}: {}\n".format(type(e).__name__, e)
+            msg += "This warning will be an error error in pytest-4.0."
+            item.warn(RemovedInPytest4Warning(msg))
         if s:
             return ascii_escaped(s)
 
@@ -1056,12 +1199,12 @@ def _idval(val, argname, idx, idfn, config=None):
     return str(argname) + str(idx)
 
 
-def _idvalset(idx, parameterset, argnames, idfn, ids, config=None):
+def _idvalset(idx, parameterset, argnames, idfn, ids, item, config):
     if parameterset.id is not None:
         return parameterset.id
     if ids is None or (idx >= len(ids) or ids[idx] is None):
         this_id = [
-            _idval(val, argname, idx, idfn, config)
+            _idval(val, argname, idx, idfn, item=item, config=config)
             for val, argname in zip(parameterset.values, argnames)
         ]
         return "-".join(this_id)
@@ -1069,9 +1212,9 @@ def _idvalset(idx, parameterset, argnames, idfn, ids, config=None):
         return ascii_escaped(ids[idx])
 
 
-def idmaker(argnames, parametersets, idfn=None, ids=None, config=None):
+def idmaker(argnames, parametersets, idfn=None, ids=None, config=None, item=None):
     ids = [
-        _idvalset(valindex, parameterset, argnames, idfn, ids, config)
+        _idvalset(valindex, parameterset, argnames, idfn, ids, config=config, item=item)
         for valindex, parameterset in enumerate(parametersets)
     ]
     if len(set(ids)) != len(ids):
@@ -1224,6 +1367,7 @@ class Function(FunctionMixin, nodes.Item, fixtures.FuncargnamesCompatAttr):
     """ a Function Item is responsible for setting up and executing a
     Python test function.
     """
+
     _genid = None
     # disable since functions handle it themselfes
     _ALLOW_MARKERS = False
@@ -1257,7 +1401,7 @@ class Function(FunctionMixin, nodes.Item, fixtures.FuncargnamesCompatAttr):
                 # feel free to cry, this was broken for years before
                 # and keywords cant fix it per design
                 self.keywords[mark.name] = mark
-            self.own_markers.extend(callspec.marks)
+            self.own_markers.extend(normalize_mark_list(callspec.marks))
         if keywords:
             self.keywords.update(keywords)
 
@@ -1293,7 +1437,7 @@ class Function(FunctionMixin, nodes.Item, fixtures.FuncargnamesCompatAttr):
     @property
     def function(self):
         "underlying python 'function' object"
-        return getattr(self.obj, "im_func", self.obj)
+        return getimfunc(self.obj)
 
     def _getobj(self):
         name = self.name

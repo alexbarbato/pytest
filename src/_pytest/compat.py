@@ -8,6 +8,7 @@ import functools
 import inspect
 import re
 import sys
+from contextlib import contextmanager
 
 import py
 
@@ -22,6 +23,7 @@ except ImportError:  # pragma: no cover
     # Only available in Python 3.4+ or as a backport
     enum = None
 
+__all__ = ["Path", "PurePath"]
 
 _PY3 = sys.version_info > (3, 0)
 _PY2 = not _PY3
@@ -32,7 +34,6 @@ if _PY3:
 else:
     from funcsigs import signature, Parameter as Parameter
 
-
 NoneType = type(None)
 NOTSET = object()
 
@@ -40,13 +41,27 @@ PY35 = sys.version_info[:2] >= (3, 5)
 PY36 = sys.version_info[:2] >= (3, 6)
 MODULE_NOT_FOUND_ERROR = "ModuleNotFoundError" if PY36 else "ImportError"
 
+if PY36:
+    from pathlib import Path, PurePath
+else:
+    from pathlib2 import Path, PurePath
+
+
 if _PY3:
-    from collections.abc import MutableMapping as MappingMixin  # noqa
-    from collections.abc import Mapping, Sequence  # noqa
+    from collections.abc import MutableMapping as MappingMixin
+    from collections.abc import Mapping, Sequence
 else:
     # those raise DeprecationWarnings in Python >=3.7
     from collections import MutableMapping as MappingMixin  # noqa
     from collections import Mapping, Sequence  # noqa
+
+
+if sys.version_info >= (3, 4):
+    from importlib.util import spec_from_file_location
+else:
+
+    def spec_from_file_location(*_, **__):
+        return None
 
 
 def _format_args(func):
@@ -72,16 +87,13 @@ def iscoroutinefunction(func):
     Note: copied and modified from Python 3.5's builtin couroutines.py to avoid import asyncio directly,
     which in turns also initializes the "logging" module as side-effect (see issue #8).
     """
-    return (
-        getattr(func, "_is_coroutine", False)
-        or (
-            hasattr(inspect, "iscoroutinefunction")
-            and inspect.iscoroutinefunction(func)
-        )
+    return getattr(func, "_is_coroutine", False) or (
+        hasattr(inspect, "iscoroutinefunction") and inspect.iscoroutinefunction(func)
     )
 
 
 def getlocation(function, curdir):
+    function = get_real_func(function)
     fn = py.path.local(inspect.getfile(function))
     lineno = function.__code__.co_firstlineno
     if fn.relto(curdir):
@@ -138,18 +150,21 @@ def getfuncargnames(function, is_method=False, cls=None):
     # If this function should be treated as a bound method even though
     # it's passed as an unbound method or function, remove the first
     # parameter name.
-    if (
-        is_method
-        or (
-            cls
-            and not isinstance(cls.__dict__.get(function.__name__, None), staticmethod)
-        )
+    if is_method or (
+        cls and not isinstance(cls.__dict__.get(function.__name__, None), staticmethod)
     ):
         arg_names = arg_names[1:]
     # Remove any names that will be replaced with mocks.
     if hasattr(function, "__wrapped__"):
-        arg_names = arg_names[num_mock_patch_args(function):]
+        arg_names = arg_names[num_mock_patch_args(function) :]
     return arg_names
+
+
+@contextmanager
+def dummy_context_manager():
+    """Context manager that does nothing, useful in situations where you might need an actual context manager or not
+    depending on some condition. Using this allow to keep the same code"""
+    yield
 
 
 def get_default_arg_names(function):
@@ -229,12 +244,31 @@ else:
             return val.encode("unicode-escape")
 
 
+class _PytestWrapper(object):
+    """Dummy wrapper around a function object for internal use only.
+
+    Used to correctly unwrap the underlying function object
+    when we are creating fixtures, because we wrap the function object ourselves with a decorator
+    to issue warnings when the fixture function is called directly.
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+
 def get_real_func(obj):
     """ gets the real function object of the (possibly) wrapped object by
     functools.wraps or functools.partial.
     """
     start_obj = obj
     for i in range(100):
+        # __pytest_wrapped__ is set by @pytest.fixture when wrapping the fixture function
+        # to trigger a warning if it gets called directly instead of by pytest: we don't
+        # want to unwrap further than this otherwise we lose useful wrappings like @mock.patch (#3774)
+        new_obj = getattr(obj, "__pytest_wrapped__", None)
+        if isinstance(new_obj, _PytestWrapper):
+            obj = new_obj.obj
+            break
         new_obj = getattr(obj, "__wrapped__", None)
         if new_obj is None:
             break
@@ -247,6 +281,21 @@ def get_real_func(obj):
         )
     if isinstance(obj, functools.partial):
         obj = obj.func
+    return obj
+
+
+def get_real_method(obj, holder):
+    """
+    Attempts to obtain the real function object that might be wrapping ``obj``, while at the same time
+    returning a bound method to ``holder`` if the original object was a bound method.
+    """
+    try:
+        is_method = hasattr(obj, "__func__")
+        obj = get_real_func(obj)
+    except Exception:
+        return obj
+    if is_method and hasattr(obj, "__get__") and callable(obj.__get__):
+        obj = obj.__get__(holder)
     return obj
 
 
@@ -340,7 +389,6 @@ if _PY2:
     from py.io import TextIO
 
     class CaptureIO(TextIO):
-
         @property
         def encoding(self):
             return getattr(self, "_encoding", "UTF-8")
@@ -350,7 +398,6 @@ else:
     import io
 
     class CaptureIO(io.TextIOWrapper):
-
         def __init__(self):
             super(CaptureIO, self).__init__(
                 io.BytesIO(), encoding="UTF-8", newline="", write_through=True

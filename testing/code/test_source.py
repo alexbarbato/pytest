@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # flake8: noqa
 # disable flake check on this file because some constructs are strange
 # or redundant on purpose and can't be disable on a line-by-line basis
@@ -6,8 +7,8 @@ import inspect
 import sys
 
 import _pytest._code
-import py
 import pytest
+import six
 from _pytest._code import Source
 from _pytest._code.source import ast
 
@@ -41,15 +42,11 @@ def test_source_str_function():
 
 
 def test_unicode():
-    try:
-        unicode
-    except NameError:
-        return
-    x = Source(unicode("4"))
+    x = Source(u"4")
     assert str(x) == "4"
-    co = _pytest._code.compile(unicode('u"\xc3\xa5"', "utf8"), mode="eval")
+    co = _pytest._code.compile(u'u"å"', mode="eval")
     val = eval(co)
-    assert isinstance(val, unicode)
+    assert isinstance(val, six.text_type)
 
 
 def test_source_from_function():
@@ -58,9 +55,7 @@ def test_source_from_function():
 
 
 def test_source_from_method():
-
     class TestClass(object):
-
         def test_method(self):
             pass
 
@@ -75,7 +70,6 @@ def test_source_from_lines():
 
 
 def test_source_from_inner_function():
-
     def f():
         pass
 
@@ -199,7 +193,6 @@ class TestSourceParsingAndCompiling(object):
         assert str(source) == "x=3"
 
     def test_compile_and_getsource_through_same_function(self):
-
         def gensource(source):
             return _pytest._code.compile(source)
 
@@ -327,7 +320,7 @@ class TestSourceParsingAndCompiling(object):
 
     def test_compile_and_getsource(self):
         co = self.source.compile()
-        py.builtin.exec_(co, globals())
+        six.exec_(co, globals())
         f(7)
         excinfo = pytest.raises(AssertionError, "f(6)")
         frame = excinfo.traceback[-1].frame
@@ -337,13 +330,12 @@ class TestSourceParsingAndCompiling(object):
 
     @pytest.mark.parametrize("name", ["", None, "my"])
     def test_compilefuncs_and_path_sanity(self, name):
-
         def check(comp, name):
             co = comp(self.source, name)
             if not name:
-                expected = "codegen %s:%d>" % (mypath, mylineno + 2 + 3)
+                expected = "codegen %s:%d>" % (mypath, mylineno + 2 + 2)
             else:
-                expected = "codegen %r %s:%d>" % (name, mypath, mylineno + 2 + 3)
+                expected = "codegen %r %s:%d>" % (name, mypath, mylineno + 2 + 2)
             fn = co.co_filename
             assert fn.endswith(expected)
 
@@ -359,9 +351,7 @@ class TestSourceParsingAndCompiling(object):
 
 
 def test_getstartingblock_singleline():
-
     class A(object):
-
         def __init__(self, *args):
             frame = sys._getframe(1)
             self.source = _pytest._code.Frame(frame).statement
@@ -373,7 +363,6 @@ def test_getstartingblock_singleline():
 
 
 def test_getline_finally():
-
     def c():
         pass
 
@@ -400,13 +389,12 @@ def test_getfuncsource_dynamic():
         def g(): pass
     """
     co = _pytest._code.compile(source)
-    py.builtin.exec_(co, globals())
+    six.exec_(co, globals())
     assert str(_pytest._code.Source(f)).strip() == "def f():\n    raise ValueError"
     assert str(_pytest._code.Source(g)).strip() == "def g(): pass"
 
 
 def test_getfuncsource_with_multine_string():
-
     def f():
         c = """while True:
     pass
@@ -538,14 +526,12 @@ def test_getfslineno():
 
 
 def test_code_of_object_instance_with_call():
-
     class A(object):
         pass
 
     pytest.raises(TypeError, lambda: _pytest._code.Source(A()))
 
     class WithCall(object):
-
         def __call__(self):
             pass
 
@@ -553,7 +539,6 @@ def test_code_of_object_instance_with_call():
     assert "pass" in str(code.source())
 
     class Hello(object):
-
         def __call__(self):
             pass
 
@@ -644,7 +629,7 @@ def test_issue55():
     assert str(s) == '  round_trip("""\n""")'
 
 
-def XXXtest_multiline():
+def test_multiline():
     source = getstatement(
         0,
         """\
@@ -756,3 +741,19 @@ something
 '''"""
     result = getstatement(1, source)
     assert str(result) == "'''\n'''"
+
+
+def test_getstartingblock_multiline():
+    class A(object):
+        def __init__(self, *args):
+            frame = sys._getframe(1)
+            self.source = _pytest._code.Frame(frame).statement
+
+    # fmt: off
+    x = A('x',
+          'y'
+          ,
+          'z')
+    # fmt: on
+    values = [i for i in x.source.lines if i.strip()]
+    assert len(values) == 4

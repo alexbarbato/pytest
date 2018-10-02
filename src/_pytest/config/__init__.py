@@ -1,6 +1,7 @@
 """ command line options, ini-file and conftest.py processing. """
 from __future__ import absolute_import, division, print_function
 import argparse
+import inspect
 import shlex
 import traceback
 import types
@@ -30,7 +31,6 @@ hookspec = HookspecMarker("pytest")
 
 
 class ConftestImportFailure(Exception):
-
     def __init__(self, path, excinfo):
         Exception.__init__(self, path, excinfo)
         self.path = path
@@ -51,6 +51,8 @@ def main(args=None, plugins=None):
     :arg plugins: list of plugin objects to be auto-registered during
                   initialization.
     """
+    from _pytest.main import EXIT_USAGEERROR
+
     try:
         try:
             config = _prepareconfig(args, plugins)
@@ -69,10 +71,10 @@ def main(args=None, plugins=None):
         tw = py.io.TerminalWriter(sys.stderr)
         for msg in e.args:
             tw.line("ERROR: {}\n".format(msg), red=True)
-        return 4
+        return EXIT_USAGEERROR
 
 
-class cmdline(object):  # NOQA compatibility namespace
+class cmdline(object):  # compatibility namespace
     main = staticmethod(main)
 
 
@@ -176,7 +178,9 @@ def _prepareconfig(args=None, plugins=None):
                 else:
                     pluginmanager.register(plugin)
         if warning:
-            config.warn("C1", warning)
+            from _pytest.warnings import _issue_config_warning
+
+            _issue_config_warning(warning, config=config)
         return pluginmanager.hook.pytest_cmdline_parse(
             pluginmanager=pluginmanager, args=args
         )
@@ -253,6 +257,10 @@ class PytestPluginManager(PluginManager):
         method = getattr(plugin, name)
         opts = super(PytestPluginManager, self).parse_hookimpl_opts(plugin, name)
 
+        # consider only actual functions for hooks (#3775)
+        if not inspect.isroutine(method):
+            return
+
         # collect unmarked hooks as long as they have the `pytest_' prefix
         if opts is None and name.startswith("pytest_"):
             opts = {}
@@ -318,9 +326,11 @@ class PytestPluginManager(PluginManager):
         self._configured = True
 
     def _warn(self, message):
-        kwargs = message if isinstance(message, dict) else {
-            "code": "I1", "message": message, "fslocation": None, "nodeid": None
-        }
+        kwargs = (
+            message
+            if isinstance(message, dict)
+            else {"code": "I1", "message": message, "fslocation": None, "nodeid": None}
+        )
         self.hook.pytest_logwarning.call_historic(kwargs=kwargs)
 
     #
@@ -335,10 +345,13 @@ class PytestPluginManager(PluginManager):
             here.
         """
         current = py.path.local()
-        self._confcutdir = current.join(
-            namespace.confcutdir, abs=True
-        ) if namespace.confcutdir else None
+        self._confcutdir = (
+            current.join(namespace.confcutdir, abs=True)
+            if namespace.confcutdir
+            else None
+        )
         self._noconftest = namespace.noconftest
+        self._using_pyargs = namespace.pyargs
         testpaths = namespace.file_or_dir
         foundanchor = False
         for path in testpaths:
@@ -404,10 +417,21 @@ class PytestPluginManager(PluginManager):
                 _ensure_removed_sysmodule(conftestpath.purebasename)
             try:
                 mod = conftestpath.pyimport()
-                if hasattr(mod, "pytest_plugins") and self._configured:
-                    from _pytest.deprecated import PYTEST_PLUGINS_FROM_NON_TOP_LEVEL_CONFTEST
+                if (
+                    hasattr(mod, "pytest_plugins")
+                    and self._configured
+                    and not self._using_pyargs
+                ):
+                    from _pytest.deprecated import (
+                        PYTEST_PLUGINS_FROM_NON_TOP_LEVEL_CONFTEST
+                    )
 
-                    warnings.warn(PYTEST_PLUGINS_FROM_NON_TOP_LEVEL_CONFTEST)
+                    warnings.warn_explicit(
+                        PYTEST_PLUGINS_FROM_NON_TOP_LEVEL_CONFTEST,
+                        category=None,
+                        filename=str(conftestpath),
+                        lineno=0,
+                    )
             except Exception:
                 raise ConftestImportFailure(conftestpath, sys.exc_info())
 
@@ -477,7 +501,8 @@ class PytestPluginManager(PluginManager):
         except ImportError as e:
             new_exc_type = ImportError
             new_exc_message = 'Error importing plugin "%s": %s' % (
-                modname, safe_str(e.args[0])
+                modname,
+                safe_str(e.args[0]),
             )
             new_exc = new_exc_type(new_exc_message)
 
@@ -518,7 +543,6 @@ def _ensure_removed_sysmodule(modname):
 
 
 class Notset(object):
-
     def __repr__(self):
         return "<NOTSET>"
 
@@ -592,7 +616,29 @@ class Config(object):
             fin()
 
     def warn(self, code, message, fslocation=None, nodeid=None):
-        """ generate a warning for this test session. """
+        """
+        .. deprecated:: 3.8
+
+            Use :py:func:`warnings.warn` or :py:func:`warnings.warn_explicit` directly instead.
+
+        Generate a warning for this test session.
+        """
+        from _pytest.warning_types import RemovedInPytest4Warning
+
+        if isinstance(fslocation, (tuple, list)) and len(fslocation) > 2:
+            filename, lineno = fslocation[:2]
+        else:
+            filename = "unknown file"
+            lineno = 0
+        msg = "config.warn has been deprecated, use warnings.warn instead"
+        if nodeid:
+            msg = "{}: {}".format(nodeid, msg)
+        warnings.warn_explicit(
+            RemovedInPytest4Warning(msg),
+            category=None,
+            filename=filename,
+            lineno=lineno,
+        )
         self.hook.pytest_logwarning.call_historic(
             kwargs=dict(
                 code=code, message=message, fslocation=fslocation, nodeid=nodeid
@@ -657,8 +703,8 @@ class Config(object):
         r = determine_setup(
             ns.inifilename,
             ns.file_or_dir + unknown_args,
-            warnfunc=self.warn,
             rootdir_cmd_arg=ns.rootdir or None,
+            config=self,
         )
         self.rootdir, self.inifile, self.inicfg = r
         self._parser.extra_info["rootdir"] = self.rootdir
@@ -696,6 +742,10 @@ class Config(object):
 
         self.pluginmanager.rewrite_hook = hook
 
+        if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+            # We don't autoload from setuptools entry points, no need to continue.
+            return
+
         # 'RECORD' available for plugins installed normally (pip install)
         # 'SOURCES.txt' available for plugins installed in dev mode (pip install -e)
         # for installed plugins 'SOURCES.txt' returns an empty list, and vice-versa
@@ -721,7 +771,10 @@ class Config(object):
         self._checkversion()
         self._consider_importhook(args)
         self.pluginmanager.consider_preparse(args)
-        self.pluginmanager.load_setuptools_entrypoints("pytest11")
+        if not os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+            # Don't autoload from setuptools entry point. Only explicitly specified
+            # plugins are going to be loaded.
+            self.pluginmanager.load_setuptools_entrypoints("pytest11")
         self.pluginmanager.consider_env()
         self.known_args_namespace = ns = self._parser.parse_known_args(
             args, namespace=copy.copy(self.option)

@@ -59,7 +59,7 @@ def get_environment_marker_support_level():
 def main():
     extras_require = {}
     install_requires = [
-        "py>=1.5.0",
+        "py>=1.5.0",  # if py gets upgrade to >=1.6, remove _width_of_current_line in terminal.py
         "six>=1.10.0",
         "setuptools",
         "attrs>=17.4.0",
@@ -69,26 +69,30 @@ def main():
     # if _PYTEST_SETUP_SKIP_PLUGGY_DEP is set, skip installing pluggy;
     # used by tox.ini to test with pluggy master
     if "_PYTEST_SETUP_SKIP_PLUGGY_DEP" not in os.environ:
-        install_requires.append("pluggy>=0.5,<0.7")
+        install_requires.append("pluggy>=0.7")
     environment_marker_support_level = get_environment_marker_support_level()
     if environment_marker_support_level >= 2:
         install_requires.append('funcsigs;python_version<"3.0"')
+        install_requires.append('pathlib2>=2.2.0;python_version<"3.6"')
         install_requires.append('colorama;sys_platform=="win32"')
     elif environment_marker_support_level == 1:
         extras_require[':python_version<"3.0"'] = ["funcsigs"]
+        extras_require[':python_version<"3.6"'] = ["pathlib2>=2.2.0"]
         extras_require[':sys_platform=="win32"'] = ["colorama"]
     else:
         if sys.platform == "win32":
             install_requires.append("colorama")
         if sys.version_info < (3, 0):
             install_requires.append("funcsigs")
+        if sys.version_info < (3, 6):
+            install_requires.append("pathlib2>=2.2.0")
 
     setup(
         name="pytest",
         description="pytest: simple powerful testing with Python",
         long_description=long_description,
         use_scm_version={"write_to": "src/_pytest/_version.py"},
-        url="http://pytest.org",
+        url="https://docs.pytest.org/en/latest/",
         project_urls={
             "Source": "https://github.com/pytest-dev/pytest",
             "Tracker": "https://github.com/pytest-dev/pytest/issues",

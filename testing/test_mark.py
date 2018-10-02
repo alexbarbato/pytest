@@ -1,7 +1,11 @@
 from __future__ import absolute_import, division, print_function
 import os
 import sys
-import mock
+
+try:
+    import mock
+except ImportError:
+    import unittest.mock as mock
 import pytest
 from _pytest.mark import (
     MarkGenerator as Mark,
@@ -12,12 +16,11 @@ from _pytest.mark import (
 from _pytest.nodes import Node
 
 ignore_markinfo = pytest.mark.filterwarnings(
-    "ignore:MarkInfo objects:_pytest.deprecated.RemovedInPytest4Warning"
+    "ignore:MarkInfo objects:pytest.RemovedInPytest4Warning"
 )
 
 
 class TestMark(object):
-
     def test_markinfo_repr(self):
         from _pytest.mark import MarkInfo, Mark
 
@@ -35,7 +38,6 @@ class TestMark(object):
         pytest.raises((AttributeError, TypeError), mark)
 
     def test_mark_with_param(self):
-
         def some_function(abc):
             pass
 
@@ -60,6 +62,19 @@ class TestMark(object):
 
         mark.hello(f)
         assert f.hello
+
+    def test_mark_legacy_ignore_fail(self):
+        def add_attribute(func):
+            func.foo = 1
+            return func
+
+        @pytest.mark.foo
+        @add_attribute
+        def test_fun():
+            pass
+
+        assert test_fun.foo == 1
+        assert test_fun.pytestmark
 
     @ignore_markinfo
     def test_pytest_mark_keywords(self):
@@ -483,7 +498,6 @@ def test_parametrized_with_kwargs(testdir):
 
 
 class TestFunctional(object):
-
     def test_mark_per_function(self, testdir):
         p = testdir.makepyfile(
             """
@@ -785,6 +799,18 @@ class TestFunctional(object):
         deselected_tests = dlist[0].items
         assert len(deselected_tests) == 2
 
+    def test_invalid_m_option(self, testdir):
+        testdir.makepyfile(
+            """
+            def test_a():
+                pass
+        """
+        )
+        result = testdir.runpytest("-m bogus/")
+        result.stdout.fnmatch_lines(
+            ["INTERNALERROR> Marker expression must be valid Python!"]
+        )
+
     def test_keywords_at_node_level(self, testdir):
         testdir.makepyfile(
             """
@@ -880,7 +906,6 @@ class TestFunctional(object):
 
 
 class TestKeywordSelection(object):
-
     def test_select_simple(self, testdir):
         file_test = testdir.makepyfile(
             """
@@ -1026,14 +1051,22 @@ class TestKeywordSelection(object):
         ),
     ],
 )
-@pytest.mark.filterwarnings("ignore")
+@pytest.mark.filterwarnings("default")
 def test_parameterset_extractfrom(argval, expected):
-    extracted = ParameterSet.extract_from(argval)
+    from _pytest.deprecated import MARK_PARAMETERSET_UNPACKING
+
+    warn_called = []
+
+    class DummyItem:
+        def warn(self, warning):
+            warn_called.append(warning)
+
+    extracted = ParameterSet.extract_from(argval, belonging_definition=DummyItem())
     assert extracted == expected
+    assert warn_called == [MARK_PARAMETERSET_UNPACKING]
 
 
 def test_legacy_transfer():
-
     class FakeModule(object):
         pytestmark = []
 
@@ -1054,7 +1087,6 @@ def test_legacy_transfer():
 
 
 class TestMarkDecorator(object):
-
     @pytest.mark.parametrize(
         "lhs, rhs, expected",
         [
@@ -1132,3 +1164,51 @@ def test_addmarker_getmarker():
     node.add_marker("b")
     node.get_marker("a").combined
     node.get_marker("b").combined
+
+
+def test_addmarker_order():
+    node = Node("Test", config=mock.Mock(), session=mock.Mock(), nodeid="Test")
+    node.add_marker("a")
+    node.add_marker("b")
+    node.add_marker("c", append=False)
+    extracted = [x.name for x in node.iter_markers()]
+    assert extracted == ["c", "a", "b"]
+
+
+@pytest.mark.issue("https://github.com/pytest-dev/pytest/issues/3605")
+@pytest.mark.filterwarnings("ignore")
+def test_markers_from_parametrize(testdir):
+    testdir.makepyfile(
+        """
+        from __future__ import print_function
+        import pytest
+
+        first_custom_mark = pytest.mark.custom_marker
+        custom_mark = pytest.mark.custom_mark
+        @pytest.fixture(autouse=True)
+        def trigger(request):
+            custom_mark =request.node.get_marker('custom_mark')
+            print("Custom mark %s" % custom_mark)
+
+        @custom_mark("custom mark non parametrized")
+        def test_custom_mark_non_parametrized():
+            print("Hey from test")
+
+        @pytest.mark.parametrize(
+            "obj_type",
+            [
+                first_custom_mark("first custom mark")("template"),
+                pytest.param( # Think this should be recommended way?
+                    "disk",
+                    marks=custom_mark('custom mark1')
+                ),
+                custom_mark("custom mark2")("vm"),  # Tried also this
+            ]
+        )
+        def test_custom_mark_parametrized(obj_type):
+            print("obj_type is:", obj_type)
+    """
+    )
+
+    result = testdir.runpytest()
+    result.assert_outcomes(passed=4)

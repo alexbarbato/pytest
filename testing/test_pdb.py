@@ -25,7 +25,6 @@ def custom_pdb_calls():
 
     # install dummy debugger class and track which methods were called on it
     class _CustomPdb(object):
-
         def __init__(self, *args, **kwargs):
             called.append("init")
 
@@ -45,7 +44,6 @@ def custom_debugger_hook():
 
     # install dummy debugger class and track which methods were called on it
     class _CustomDebugger(object):
-
         def __init__(self, *args, **kwargs):
             called.append("init")
 
@@ -65,7 +63,6 @@ def custom_debugger_hook():
 
 
 class TestPDB(object):
-
     @pytest.fixture
     def pdblist(self, request):
         monkeypatch = request.getfixturevalue("monkeypatch")
@@ -263,7 +260,9 @@ class TestPDB(object):
                 assert False
         """
         )
-        child = testdir.spawn_pytest("--show-capture=%s --pdb %s" % (showcapture, p1))
+        child = testdir.spawn_pytest(
+            "--show-capture={} --pdb {}".format(showcapture, p1)
+        )
         if showcapture in ("all", "log"):
             child.expect("captured log")
             child.expect("get rekt")
@@ -398,6 +397,24 @@ class TestPDB(object):
         child.read()
         self.flush(child)
 
+    def test_pdb_with_caplog_on_pdb_invocation(self, testdir):
+        p1 = testdir.makepyfile(
+            """
+            def test_1(capsys, caplog):
+                import logging
+                logging.getLogger(__name__).warning("some_warning")
+                assert 0
+        """
+        )
+        child = testdir.spawn_pytest("--pdb %s" % str(p1))
+        child.send("caplog.record_tuples\n")
+        child.expect_exact(
+            "[('test_pdb_with_caplog_on_pdb_invocation', 30, 'some_warning')]"
+        )
+        child.sendeof()
+        child.read()
+        self.flush(child)
+
     def test_set_trace_capturing_afterwards(self, testdir):
         p1 = testdir.makepyfile(
             """
@@ -476,7 +493,7 @@ class TestPDB(object):
             x = 5
         """
         )
-        child = testdir.spawn("%s %s" % (sys.executable, p1))
+        child = testdir.spawn("{} {}".format(sys.executable, p1))
         child.expect("x = 5")
         child.sendeof()
         self.flush(child)
@@ -563,7 +580,6 @@ class TestPDB(object):
 
 
 class TestDebuggingBreakpoints(object):
-
     def test_supports_breakpoint_module_global(self):
         """
         Test that supports breakpoint global marks on Python 3.7+ and not on
@@ -698,5 +714,42 @@ class TestDebuggingBreakpoints(object):
         child.sendeof()
         rest = child.read().decode("utf8")
         assert "1 failed" in rest
+        assert "reading from stdin while output" not in rest
+        TestPDB.flush(child)
+
+
+class TestTraceOption:
+    def test_trace_sets_breakpoint(self, testdir):
+        p1 = testdir.makepyfile(
+            """
+            def test_1():
+                assert True
+            """
+        )
+        child = testdir.spawn_pytest("--trace " + str(p1))
+        child.expect("test_1")
+        child.expect("(Pdb)")
+        child.sendeof()
+        rest = child.read().decode("utf8")
+        assert "1 passed" in rest
+        assert "reading from stdin while output" not in rest
+        TestPDB.flush(child)
+
+    def test_trace_against_yield_test(self, testdir):
+        p1 = testdir.makepyfile(
+            """
+            def is_equal(a, b):
+                assert a == b
+
+            def test_1():
+                yield is_equal, 1, 1
+            """
+        )
+        child = testdir.spawn_pytest("--trace " + str(p1))
+        child.expect("is_equal")
+        child.expect("(Pdb)")
+        child.sendeof()
+        rest = child.read().decode("utf8")
+        assert "1 passed" in rest
         assert "reading from stdin while output" not in rest
         TestPDB.flush(child)

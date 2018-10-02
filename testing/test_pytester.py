@@ -8,7 +8,7 @@ import _pytest.pytester as pytester
 from _pytest.pytester import HookRecorder
 from _pytest.pytester import CwdSnapshot, SysModulesSnapshot, SysPathsSnapshot
 from _pytest.config import PytestPluginManager
-from _pytest.main import EXIT_OK, EXIT_TESTSFAILED
+from _pytest.main import EXIT_OK, EXIT_TESTSFAILED, EXIT_NOTESTSCOLLECTED
 
 
 def test_make_hook_recorder(testdir):
@@ -83,10 +83,59 @@ def test_testdir_runs_with_plugin(testdir):
     result.assert_outcomes(passed=1)
 
 
+def test_runresult_assertion_on_xfail(testdir):
+    testdir.makepyfile(
+        """
+        import pytest
+
+        pytest_plugins = "pytester"
+
+        @pytest.mark.xfail
+        def test_potato():
+            assert False
+    """
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(xfailed=1)
+    assert result.ret == 0
+
+
+def test_runresult_assertion_on_xpassed(testdir):
+    testdir.makepyfile(
+        """
+        import pytest
+
+        pytest_plugins = "pytester"
+
+        @pytest.mark.xfail
+        def test_potato():
+            assert True
+    """
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(xpassed=1)
+    assert result.ret == 0
+
+
+def test_xpassed_with_strict_is_considered_a_failure(testdir):
+    testdir.makepyfile(
+        """
+        import pytest
+
+        pytest_plugins = "pytester"
+
+        @pytest.mark.xfail(strict=True)
+        def test_potato():
+            assert True
+    """
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(failed=1)
+    assert result.ret != 0
+
+
 def make_holder():
-
     class apiclass(object):
-
         def pytest_xyz(self, arg):
             "x"
 
@@ -143,7 +192,6 @@ def test_makepyfile_utf8(testdir):
 
 
 class TestInlineRunModulesCleanup(object):
-
     def test_inline_run_test_module_not_cleaned_up(self, testdir):
         test_mod = testdir.makepyfile("def test_foo(): assert True")
         result = testdir.inline_run(str(test_mod))
@@ -154,7 +202,6 @@ class TestInlineRunModulesCleanup(object):
         assert result2.ret == EXIT_TESTSFAILED
 
     def spy_factory(self):
-
         class SysModulesSnapshotSpy(object):
             instances = []
 
@@ -217,59 +264,6 @@ class TestInlineRunModulesCleanup(object):
         )
         testdir.inline_run(str(test_mod))
         assert imported.data == 42
-
-
-def test_inline_run_clean_sys_paths(testdir):
-
-    def test_sys_path_change_cleanup(self, testdir):
-        test_path1 = testdir.tmpdir.join("boink1").strpath
-        test_path2 = testdir.tmpdir.join("boink2").strpath
-        test_path3 = testdir.tmpdir.join("boink3").strpath
-        sys.path.append(test_path1)
-        sys.meta_path.append(test_path1)
-        original_path = list(sys.path)
-        original_meta_path = list(sys.meta_path)
-        test_mod = testdir.makepyfile(
-            """
-            import sys
-            sys.path.append({:test_path2})
-            sys.meta_path.append({:test_path2})
-            def test_foo():
-                sys.path.append({:test_path3})
-                sys.meta_path.append({:test_path3})""".format(
-                locals()
-            )
-        )
-        testdir.inline_run(str(test_mod))
-        assert sys.path == original_path
-        assert sys.meta_path == original_meta_path
-
-    def spy_factory(self):
-
-        class SysPathsSnapshotSpy(object):
-            instances = []
-
-            def __init__(self):
-                SysPathsSnapshotSpy.instances.append(self)
-                self._spy_restore_count = 0
-                self.__snapshot = SysPathsSnapshot()
-
-            def restore(self):
-                self._spy_restore_count += 1
-                return self.__snapshot.restore()
-
-        return SysPathsSnapshotSpy
-
-    def test_inline_run_taking_and_restoring_a_sys_paths_snapshot(
-        self, testdir, monkeypatch
-    ):
-        spy_factory = self.spy_factory()
-        monkeypatch.setattr(pytester, "SysPathsSnapshot", spy_factory)
-        test_mod = testdir.makepyfile("def test_foo(): pass")
-        testdir.inline_run(str(test_mod))
-        assert len(spy_factory.instances) == 1
-        spy = spy_factory.instances[0]
-        assert spy._spy_restore_count == 1
 
 
 def test_assert_outcomes_after_pytest_error(testdir):
@@ -370,9 +364,7 @@ class TestSysPathsSnapshot(object):
         original = list(sys_path)
         original_other = list(getattr(sys, other_path_type))
         snapshot = SysPathsSnapshot()
-        transformation = {
-            "source": (0, 1, 2, 3, 4, 5), "target": (6, 2, 9, 7, 5, 8)
-        }  # noqa: E201
+        transformation = {"source": (0, 1, 2, 3, 4, 5), "target": (6, 2, 9, 7, 5, 8)}
         assert sys_path == [self.path(x) for x in transformation["source"]]
         sys_path[1] = self.path(6)
         sys_path[3] = self.path(7)
@@ -399,3 +391,13 @@ class TestSysPathsSnapshot(object):
         assert getattr(sys, path_type) == original_data
         assert getattr(sys, other_path_type) is original_other
         assert getattr(sys, other_path_type) == original_other_data
+
+
+def test_testdir_subprocess(testdir):
+    testfile = testdir.makepyfile("def test_one(): pass")
+    assert testdir.runpytest_subprocess(testfile).ret == 0
+
+
+def test_unicode_args(testdir):
+    result = testdir.runpytest("-k", u"💩")
+    assert result.ret == EXIT_NOTESTSCOLLECTED

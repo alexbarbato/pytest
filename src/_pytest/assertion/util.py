@@ -187,9 +187,9 @@ def _diff_text(left, right, verbose=False):
         r = r.replace(r"\r", "\r")
         return r
 
-    if isinstance(left, six.binary_type):
+    if isinstance(left, bytes):
         left = escape_for_readable_diff(left)
-    if isinstance(right, six.binary_type):
+    if isinstance(right, bytes):
         right = escape_for_readable_diff(right)
     if not verbose:
         i = 0  # just in case left or right has zero length
@@ -322,7 +322,7 @@ def _compare_eq_dict(left, right, verbose=False):
 def _notin_text(term, text, verbose=False):
     index = text.find(term)
     head = text[:index]
-    tail = text[index + len(term):]
+    tail = text[index + len(term) :]
     correct_text = head + tail
     diff = _diff_text(correct_text, text, verbose)
     newdiff = [u("%s is contained here:") % py.io.saferepr(term, maxsize=42)]

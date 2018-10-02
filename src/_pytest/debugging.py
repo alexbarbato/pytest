@@ -5,6 +5,8 @@ import sys
 import os
 from doctest import UnexpectedException
 
+from _pytest.config import hookimpl
+
 try:
     from builtins import breakpoint  # noqa
 
@@ -28,6 +30,12 @@ def pytest_addoption(parser):
         help="start a custom interactive Python debugger on errors. "
         "For example: --pdbcls=IPython.terminal.debugger:TerminalPdb",
     )
+    group._addoption(
+        "--trace",
+        dest="trace",
+        action="store_true",
+        help="Immediately break when running each test.",
+    )
 
 
 def pytest_configure(config):
@@ -38,6 +46,8 @@ def pytest_configure(config):
     else:
         pdb_cls = pdb.Pdb
 
+    if config.getvalue("trace"):
+        config.pluginmanager.register(PdbTrace(), "pdbtrace")
     if config.getvalue("usepdb"):
         config.pluginmanager.register(PdbInvoke(), "pdbinvoke")
 
@@ -65,12 +75,13 @@ def pytest_configure(config):
 
 class pytestPDB(object):
     """ Pseudo PDB that defers to the real pdb. """
+
     _pluginmanager = None
     _config = None
     _pdb_cls = pdb.Pdb
 
     @classmethod
-    def set_trace(cls):
+    def set_trace(cls, set_break=True):
         """ invoke PDB set_trace debugging, dropping any IO capturing. """
         import _pytest.config
 
@@ -83,15 +94,16 @@ class pytestPDB(object):
             tw.line()
             tw.sep(">", "PDB set_trace (IO-capturing turned off)")
             cls._pluginmanager.hook.pytest_enter_pdb(config=cls._config)
-        cls._pdb_cls().set_trace(frame)
+        if set_break:
+            cls._pdb_cls().set_trace(frame)
 
 
 class PdbInvoke(object):
-
     def pytest_exception_interact(self, node, call, report):
         capman = node.config.pluginmanager.getplugin("capturemanager")
         if capman:
-            out, err = capman.suspend_global_capture(in_=True)
+            capman.suspend_global_capture(in_=True)
+            out, err = capman.read_global_capture()
             sys.stdout.write(out)
             sys.stdout.write(err)
         _enter_pdb(node, call.excinfo, report)
@@ -104,6 +116,30 @@ class PdbInvoke(object):
         post_mortem(tb)
 
 
+class PdbTrace(object):
+    @hookimpl(hookwrapper=True)
+    def pytest_pyfunc_call(self, pyfuncitem):
+        _test_pytest_function(pyfuncitem)
+        yield
+
+
+def _test_pytest_function(pyfuncitem):
+    pytestPDB.set_trace(set_break=False)
+    testfunction = pyfuncitem.obj
+    pyfuncitem.obj = pdb.runcall
+    if pyfuncitem._isyieldedfunction():
+        arg_list = list(pyfuncitem._args)
+        arg_list.insert(0, testfunction)
+        pyfuncitem._args = tuple(arg_list)
+    else:
+        if "func" in pyfuncitem._fixtureinfo.argnames:
+            raise ValueError("--trace can't be used with a fixture named func!")
+        pyfuncitem.funcargs["func"] = testfunction
+        new_list = list(pyfuncitem._fixtureinfo.argnames)
+        new_list.append("func")
+        pyfuncitem._fixtureinfo.argnames = tuple(new_list)
+
+
 def _enter_pdb(node, excinfo, rep):
     # XXX we re-use the TerminalReporter's terminalwriter
     # because this seems to avoid some encoding related troubles
@@ -114,7 +150,9 @@ def _enter_pdb(node, excinfo, rep):
     showcapture = node.config.option.showcapture
 
     for sectionname, content in (
-        ("stdout", rep.capstdout), ("stderr", rep.capstderr), ("log", rep.caplog)
+        ("stdout", rep.capstdout),
+        ("stderr", rep.capstderr),
+        ("log", rep.caplog),
     ):
         if showcapture in (sectionname, "all") and content:
             tw.sep(">", "captured " + sectionname)
@@ -148,9 +186,7 @@ def _find_last_non_hidden_frame(stack):
 
 
 def post_mortem(t):
-
     class Pdb(pytestPDB._pdb_cls):
-
         def get_stack(self, f, t):
             stack, i = pdb.Pdb.get_stack(self, f, t)
             if f is None:

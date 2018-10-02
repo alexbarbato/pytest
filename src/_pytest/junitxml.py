@@ -55,7 +55,6 @@ _py_ext_re = re.compile(r"\.py$")
 
 
 def bin_xml_escape(arg):
-
     def repl(matchobj):
         i = ord(matchobj.group())
         if i <= 0xFF:
@@ -67,7 +66,6 @@ def bin_xml_escape(arg):
 
 
 class _NodeReporter(object):
-
     def __init__(self, nodeid, xml):
 
         self.id = nodeid
@@ -260,12 +258,11 @@ def record_property(request):
 
 
 @pytest.fixture
-def record_xml_property(record_property):
+def record_xml_property(record_property, request):
     """(Deprecated) use record_property."""
-    import warnings
     from _pytest import deprecated
 
-    warnings.warn(deprecated.RECORD_XML_PROPERTY, DeprecationWarning, stacklevel=2)
+    request.node.warn(deprecated.RECORD_XML_PROPERTY)
 
     return record_property
 
@@ -276,9 +273,9 @@ def record_xml_attribute(request):
     The fixture is callable with ``(name, value)``, with value being
     automatically xml-encoded
     """
-    request.node.warn(
-        code="C3", message="record_xml_attribute is an experimental feature"
-    )
+    from _pytest.warning_types import PytestWarning
+
+    request.node.warn(PytestWarning("record_xml_attribute is an experimental feature"))
     xml = getattr(request.config, "_xml", None)
     if xml is not None:
         node_reporter = xml.node_reporter(request.node.nodeid)
@@ -358,7 +355,6 @@ def mangle_test_address(address):
 
 
 class LogXML(object):
-
     def __init__(self, logfile, prefix, suite_name="pytest", logging="no"):
         logfile = os.path.expanduser(os.path.expandvars(logfile))
         self.logfile = os.path.normpath(os.path.abspath(logfile))
@@ -544,9 +540,7 @@ class LogXML(object):
                 skips=self.stats["skipped"],
                 tests=numtests,
                 time="%.3f" % suite_time_delta,
-            ).unicode(
-                indent=0
-            )
+            ).unicode(indent=0)
         )
         logfile.close()
 

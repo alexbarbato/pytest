@@ -9,6 +9,7 @@ import _pytest._code
 from _pytest.config import hookimpl
 from _pytest.outcomes import fail, skip, xfail
 from _pytest.python import transfer_markers, Class, Module, Function
+from _pytest.compat import getimfunc
 
 
 def pytest_pycollect_makeitem(collector, name, obj):
@@ -53,7 +54,7 @@ class UnitTestCase(Class):
             x = getattr(self.obj, name)
             if not getattr(x, "__test__", True):
                 continue
-            funcobj = getattr(x, "im_func", x)
+            funcobj = getimfunc(x)
             transfer_markers(funcobj, cls, module)
             yield TestCaseFunction(name, parent=self, callobj=funcobj)
             foundsomething = True
@@ -69,6 +70,7 @@ class UnitTestCase(Class):
 class TestCaseFunction(Function):
     nofuncargs = True
     _excinfo = None
+    _testcase = None
 
     def setup(self):
         self._testcase = self.parent.obj(self.name)
@@ -163,15 +165,13 @@ class TestCaseFunction(Function):
         # implements the skipping machinery (see #2137)
         # analog to pythons Lib/unittest/case.py:run
         testMethod = getattr(self._testcase, self._testcase._testMethodName)
-        if (
-            getattr(self._testcase.__class__, "__unittest_skip__", False)
-            or getattr(testMethod, "__unittest_skip__", False)
+        if getattr(self._testcase.__class__, "__unittest_skip__", False) or getattr(
+            testMethod, "__unittest_skip__", False
         ):
             # If the class or method was skipped.
-            skip_why = (
-                getattr(self._testcase.__class__, "__unittest_skip_why__", "")
-                or getattr(testMethod, "__unittest_skip_why__", "")
-            )
+            skip_why = getattr(
+                self._testcase.__class__, "__unittest_skip_why__", ""
+            ) or getattr(testMethod, "__unittest_skip_why__", "")
             try:  # PY3, unittest2 on PY2
                 self._testcase._addSkip(self, self._testcase, skip_why)
             except TypeError:  # PY2

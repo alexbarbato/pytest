@@ -2,26 +2,19 @@
 from __future__ import absolute_import, division, print_function
 import os
 import sys
+import textwrap
 import types
 
 import six
 
-import _pytest._code
 import py
 import pytest
 from _pytest.main import EXIT_NOTESTSCOLLECTED, EXIT_USAGEERROR
 
 
 class TestGeneralUsage(object):
-
     def test_config_error(self, testdir):
-        testdir.makeconftest(
-            """
-            def pytest_configure(config):
-                import pytest
-                raise pytest.UsageError("hello")
-        """
-        )
+        testdir.copy_example("conftest_usageerror/conftest.py")
         result = testdir.runpytest(testdir.tmpdir)
         assert result.ret != 0
         result.stderr.fnmatch_lines(["*ERROR: hello"])
@@ -138,7 +131,7 @@ class TestGeneralUsage(object):
         p2 = testdir.makefile(".pyc", "123")
         result = testdir.runpytest(p1, p2)
         assert result.ret
-        result.stderr.fnmatch_lines(["*ERROR: not found:*%s" % (p2.basename,)])
+        result.stderr.fnmatch_lines(["*ERROR: not found:*{}".format(p2.basename)])
 
     def test_issue486_better_reporting_on_conftest_load_failure(self, testdir):
         testdir.makepyfile("")
@@ -171,18 +164,7 @@ class TestGeneralUsage(object):
         result.stdout.fnmatch_lines(["*1 skip*"])
 
     def test_issue88_initial_file_multinodes(self, testdir):
-        testdir.makeconftest(
-            """
-            import pytest
-            class MyFile(pytest.File):
-                def collect(self):
-                    return [MyItem("hello", parent=self)]
-            def pytest_collect_file(path, parent):
-                return MyFile(path, parent)
-            class MyItem(pytest.Item):
-                pass
-        """
-        )
+        testdir.copy_example("issue88_initial_file_multinodes")
         p = testdir.makepyfile("def test_hello(): pass")
         result = testdir.runpytest(p, "--collect-only")
         result.stdout.fnmatch_lines(["*MyFile*test_issue88*", "*Module*test_issue88*"])
@@ -219,16 +201,16 @@ class TestGeneralUsage(object):
         testdir.tmpdir.join("py").mksymlinkto(py._pydir)
         p = testdir.tmpdir.join("main.py")
         p.write(
-            _pytest._code.Source(
+            textwrap.dedent(
+                """\
+                import sys, os
+                sys.path.insert(0, '')
+                import py
+                print(py.__file__)
+                print(py.__path__)
+                os.chdir(os.path.dirname(os.getcwd()))
+                print(py.log)
                 """
-            import sys, os
-            sys.path.insert(0, '')
-            import py
-            print (py.__file__)
-            print (py.__path__)
-            os.chdir(os.path.dirname(os.getcwd()))
-            print (py.log)
-        """
             )
         )
         result = testdir.runpython(p)
@@ -458,7 +440,6 @@ class TestGeneralUsage(object):
 
 
 class TestInvocationVariants(object):
-
     def test_earlyinit(self, testdir):
         p = testdir.makepyfile(
             """
@@ -472,7 +453,7 @@ class TestInvocationVariants(object):
     @pytest.mark.xfail("sys.platform.startswith('java')")
     def test_pydoc(self, testdir):
         for name in ("py.test", "pytest"):
-            result = testdir.runpython_c("import %s;help(%s)" % (name, name))
+            result = testdir.runpython_c("import {};help({})".format(name, name))
             assert result.ret == 0
             s = result.stdout.str()
             assert "MarkGenerator" in s
@@ -557,9 +538,7 @@ class TestInvocationVariants(object):
         out, err = capsys.readouterr()
 
     def test_invoke_plugin_api(self, testdir, capsys):
-
         class MyPlugin(object):
-
             def pytest_addoption(self, parser):
                 parser.addoption("--myopt")
 
@@ -681,6 +660,16 @@ class TestInvocationVariants(object):
             ["*test_world.py::test_other*PASSED*", "*1 passed*"]
         )
 
+    def test_invoke_test_and_doctestmodules(self, testdir):
+        p = testdir.makepyfile(
+            """
+            def test():
+                pass
+        """
+        )
+        result = testdir.runpytest(str(p) + "::test", "--doctest-modules")
+        result.stdout.fnmatch_lines(["*1 passed*"])
+
     @pytest.mark.skipif(not hasattr(os, "symlink"), reason="requires symlinks")
     def test_cmdline_python_package_symlink(self, testdir, monkeypatch):
         """
@@ -798,9 +787,10 @@ class TestInvocationVariants(object):
         """Test backward compatibility for get_plugin_manager function. See #787."""
         import _pytest.config
 
-        assert type(
-            _pytest.config.get_plugin_manager()
-        ) is _pytest.config.PytestPluginManager
+        assert (
+            type(_pytest.config.get_plugin_manager())
+            is _pytest.config.PytestPluginManager
+        )
 
     def test_has_plugin(self, request):
         """Test hasplugin function of the plugin manager (#932)."""
@@ -846,7 +836,7 @@ class TestDurations(object):
                     if ("test_%s" % x) in line and y in line:
                         break
                 else:
-                    raise AssertionError("not found %s %s" % (x, y))
+                    raise AssertionError("not found {} {}".format(x, y))
 
     def test_with_deselected(self, testdir):
         testdir.makepyfile(self.source)
@@ -1064,3 +1054,15 @@ def test_frame_leak_on_failing_test(testdir):
     )
     result = testdir.runpytest_subprocess()
     result.stdout.fnmatch_lines(["*1 failed, 1 passed in*"])
+
+
+def test_fixture_mock_integration(testdir):
+    """Test that decorators applied to fixture are left working (#3774)"""
+    p = testdir.copy_example("acceptance/fixture_mock_integration.py")
+    result = testdir.runpytest(p)
+    result.stdout.fnmatch_lines("*1 passed*")
+
+
+def test_usage_error_code(testdir):
+    result = testdir.runpytest("-unknown-option-")
+    assert result.ret == EXIT_USAGEERROR

@@ -161,6 +161,25 @@ Skip a test function if a condition is ``True``.
     :keyword str reason: Reason why the test function is being skipped.
 
 
+.. _`pytest.mark.usefixtures ref`:
+
+pytest.mark.usefixtures
+~~~~~~~~~~~~~~~~~~~~~~~
+
+**Tutorial**: :ref:`usefixtures`.
+
+Mark a test function as using the given fixture names.
+
+.. warning::
+
+    This mark can be used with *test functions* only, having no affect when applied
+    to a **fixture** function.
+
+.. py:function:: pytest.mark.usefixtures(*names)
+
+    :param args: the names of the fixture to use, as strings
+
+
 .. _`pytest.mark.xfail ref`:
 
 pytest.mark.xfail
@@ -441,7 +460,7 @@ To use it, include in your top-most ``conftest.py`` file::
 
 
 .. autoclass:: Testdir()
-    :members: runpytest,runpytest_subprocess,runpytest_inprocess,makeconftest,makepyfile
+    :members:
 
 .. autoclass:: RunResult()
     :members:
@@ -592,6 +611,8 @@ Session related reporting hooks:
 .. autofunction:: pytest_terminal_summary
 .. autofunction:: pytest_fixture_setup
 .. autofunction:: pytest_fixture_post_finalizer
+.. autofunction:: pytest_logwarning
+.. autofunction:: pytest_warning_captured
 
 And here is the central hook for reporting about
 test execution:
@@ -768,7 +789,7 @@ TestReport
 _Result
 ~~~~~~~
 
-.. autoclass:: pluggy._Result
+.. autoclass:: pluggy.callers._Result
     :members:
 
 Special Variables
@@ -847,6 +868,11 @@ Contains comma-separated list of modules that should be loaded as plugins:
 
     export PYTEST_PLUGINS=mymodule.plugin,xdist
 
+PYTEST_DISABLE_PLUGIN_AUTOLOAD
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When set, disables plugin auto-loading through setuptools entrypoints. Only explicitly specified plugins will be
+loaded.
 
 PYTEST_CURRENT_TEST
 ~~~~~~~~~~~~~~~~~~~
@@ -916,6 +942,7 @@ passed multiple times. The expected format is ``name=value``. For example::
 
    * ``classic``: classic pytest output.
    * ``progress``: like classic pytest output, but with a progress indicator.
+   * ``count``: like progress, but shows progress as the number of tests completed instead of a percent.
 
    The default is ``progress``, but you can fallback to ``classic`` if you prefer or
    the new mode is causing unexpected problems:
@@ -1210,7 +1237,8 @@ passed multiple times. The expected format is ``name=value``. For example::
 .. confval:: python_classes
 
    One or more name prefixes or glob-style patterns determining which classes
-   are considered for test collection. By default, pytest will consider any
+   are considered for test collection. Search for multiple glob patterns by
+   adding a space between patterns. By default, pytest will consider any
    class prefixed with ``Test`` as a test collection.  Here is an example of how
    to collect tests from classes that end in ``Suite``:
 
@@ -1227,15 +1255,33 @@ passed multiple times. The expected format is ``name=value``. For example::
 .. confval:: python_files
 
    One or more Glob-style file patterns determining which python files
-   are considered as test modules. By default, pytest will consider
-   any file matching with ``test_*.py`` and ``*_test.py`` globs as a test
-   module.
+   are considered as test modules. Search for multiple glob patterns by
+   adding a space between patterns:
+
+   .. code-block:: ini
+
+        [pytest]
+        python_files = test_*.py check_*.py example_*.py
+
+   Or one per line:
+
+   .. code-block:: ini
+
+        [pytest]
+        python_files =
+            test_*.py
+            check_*.py
+            example_*.py
+
+   By default, files matching ``test_*.py`` and ``*_test.py`` will be considered
+   test modules.
 
 
 .. confval:: python_functions
 
    One or more name prefixes or glob-patterns determining which test functions
-   and methods are considered tests. By default, pytest will consider any
+   and methods are considered tests. Search for multiple glob patterns by
+   adding a space between patterns. By default, pytest will consider any
    function prefixed with ``test`` as a test.  Here is an example of how
    to collect test functions and methods that end in ``_test``:
 

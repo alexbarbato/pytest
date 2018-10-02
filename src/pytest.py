@@ -18,45 +18,55 @@ from _pytest.mark import MARK_GEN as mark, param
 from _pytest.main import Session
 from _pytest.nodes import Item, Collector, File
 from _pytest.fixtures import fillfixtures as _fillfuncargs
-from _pytest.python import Module, Class, Instance, Function, Generator
-
+from _pytest.python import Package, Module, Class, Instance, Function, Generator
 from _pytest.python_api import approx, raises
+from _pytest.warning_types import (
+    PytestWarning,
+    PytestDeprecationWarning,
+    RemovedInPytest4Warning,
+    PytestExperimentalApiWarning,
+)
 
 set_trace = __pytestPDB.set_trace
 
 __all__ = [
-    "main",
-    "UsageError",
-    "cmdline",
-    "hookspec",
-    "hookimpl",
     "__version__",
-    "register_assert_rewrite",
-    "freeze_includes",
-    "set_trace",
-    "warns",
-    "deprecated_call",
-    "fixture",
-    "yield_fixture",
-    "fail",
-    "skip",
-    "xfail",
-    "importorskip",
-    "exit",
-    "mark",
-    "param",
-    "approx",
     "_fillfuncargs",
-    "Item",
-    "File",
-    "Collector",
-    "Session",
-    "Module",
+    "approx",
     "Class",
-    "Instance",
+    "cmdline",
+    "Collector",
+    "deprecated_call",
+    "exit",
+    "fail",
+    "File",
+    "fixture",
+    "freeze_includes",
     "Function",
     "Generator",
+    "hookimpl",
+    "hookspec",
+    "importorskip",
+    "Instance",
+    "Item",
+    "main",
+    "mark",
+    "Module",
+    "Package",
+    "param",
+    "PytestDeprecationWarning",
+    "PytestExperimentalApiWarning",
+    "PytestWarning",
     "raises",
+    "register_assert_rewrite",
+    "RemovedInPytest4Warning",
+    "Session",
+    "set_trace",
+    "skip",
+    "UsageError",
+    "warns",
+    "xfail",
+    "yield_fixture",
 ]
 
 if __name__ == "__main__":

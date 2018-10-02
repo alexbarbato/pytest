@@ -7,6 +7,8 @@ import os
 from _pytest.junitxml import LogXML
 import pytest
 
+from _pytest.reports import BaseReport
+
 
 def runandparse(testdir, *args):
     resultpath = testdir.tmpdir.join("junit.xml")
@@ -29,7 +31,6 @@ def assert_attr(node, **kwargs):
 
 
 class DomNode(object):
-
     def __init__(self, dom):
         self.__node = dom
 
@@ -81,7 +82,6 @@ class DomNode(object):
 
 
 class TestPython(object):
-
     def test_summing_simple(self, testdir):
         testdir.makepyfile(
             """
@@ -713,7 +713,6 @@ def test_dont_configure_on_slaves(tmpdir):
     gotten = []
 
     class FakeConfig(object):
-
         def __init__(self):
             self.pluginmanager = self
             self.option = self
@@ -737,7 +736,6 @@ def test_dont_configure_on_slaves(tmpdir):
 
 
 class TestNonPython(object):
-
     def test_summing_simple(self, testdir):
         testdir.makeconftest(
             """
@@ -943,8 +941,7 @@ def test_double_colon_split_method_issue469(testdir):
 def test_unicode_issue368(testdir):
     path = testdir.tmpdir.join("test.xml")
     log = LogXML(str(path), None)
-    ustr = py.builtin._totext("ВНИ!", "utf-8")
-    from _pytest.runner import BaseReport
+    ustr = u"ВНИ!"
 
     class Report(BaseReport):
         longrepr = ustr
@@ -1008,6 +1005,7 @@ def test_record_property_same_name(testdir):
     pnodes[1].assert_attr(name="foo", value="baz")
 
 
+@pytest.mark.filterwarnings("default")
 def test_record_attribute(testdir):
     testdir.makepyfile(
         """
@@ -1026,7 +1024,7 @@ def test_record_attribute(testdir):
     tnode.assert_attr(bar="1")
     tnode.assert_attr(foo="<1")
     result.stdout.fnmatch_lines(
-        ["test_record_attribute.py::test_record", "*record_xml_attribute*experimental*"]
+        ["*test_record_attribute.py:6:*record_xml_attribute is an experimental feature"]
     )
 
 
@@ -1127,24 +1125,20 @@ def test_fancy_items_regression(testdir):
     import pprint
 
     pprint.pprint(items)
-    assert (
-        items
-        == [
-            u"conftest a conftest.py",
-            u"conftest a conftest.py",
-            u"conftest b conftest.py",
-            u"test_fancy_items_regression a test_fancy_items_regression.py",
-            u"test_fancy_items_regression a test_fancy_items_regression.py",
-            u"test_fancy_items_regression b test_fancy_items_regression.py",
-            u"test_fancy_items_regression test_pass" u" test_fancy_items_regression.py",
-        ]
-    )
+    assert items == [
+        u"conftest a conftest.py",
+        u"conftest a conftest.py",
+        u"conftest b conftest.py",
+        u"test_fancy_items_regression a test_fancy_items_regression.py",
+        u"test_fancy_items_regression a test_fancy_items_regression.py",
+        u"test_fancy_items_regression b test_fancy_items_regression.py",
+        u"test_fancy_items_regression test_pass" u" test_fancy_items_regression.py",
+    ]
 
 
 def test_global_properties(testdir):
     path = testdir.tmpdir.join("test_global_properties.xml")
     log = LogXML(str(path), None)
-    from _pytest.runner import BaseReport
 
     class Report(BaseReport):
         sections = []
@@ -1180,7 +1174,6 @@ def test_url_property(testdir):
     test_url = "http://www.github.com/pytest-dev"
     path = testdir.tmpdir.join("test_url_property.xml")
     log = LogXML(str(path), None)
-    from _pytest.runner import BaseReport
 
     class Report(BaseReport):
         longrepr = "FooBarBaz"

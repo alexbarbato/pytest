@@ -7,7 +7,7 @@ from _pytest.recwarn import WarningsRecorder
 
 
 def test_recwarn_functional(testdir):
-    reprec = testdir.inline_runsource(
+    testdir.makepyfile(
         """
         import warnings
         def test_method(recwarn):
@@ -16,12 +16,11 @@ def test_recwarn_functional(testdir):
             assert isinstance(warn.message, UserWarning)
     """
     )
-    res = reprec.countoutcomes()
-    assert tuple(res) == (1, 0, 0), res
+    reprec = testdir.inline_run()
+    reprec.assertoutcome(passed=1)
 
 
 class TestWarningsRecorderChecker(object):
-
     def test_recording(self):
         rec = WarningsRecorder()
         with rec:
@@ -188,7 +187,6 @@ class TestDeprecatedCall(object):
 
 
 class TestWarns(object):
-
     def test_strings(self):
         # different messages, b/c Python suppresses multiple identical warnings
         source1 = "warnings.warn('w1', RuntimeWarning)"

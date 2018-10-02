@@ -22,7 +22,7 @@ def monkeypatch():
         monkeypatch.setitem(mapping, name, value)
         monkeypatch.delitem(obj, name, raising=True)
         monkeypatch.setenv(name, value, prepend=False)
-        monkeypatch.delenv(name, value, raising=True)
+        monkeypatch.delenv(name, raising=True)
         monkeypatch.syspath_prepend(path)
         monkeypatch.chdir(path)
 
@@ -86,7 +86,6 @@ def derive_importpath(import_path, raising):
 
 
 class Notset(object):
-
     def __repr__(self):
         return "<notset>"
 
@@ -220,8 +219,8 @@ class MonkeyPatch(object):
         self.setitem(os.environ, name, value)
 
     def delenv(self, name, raising=True):
-        """ Delete ``name`` from the environment. Raise KeyError it does not
-        exist.
+        """ Delete ``name`` from the environment. Raise KeyError if it does
+        not exist.
 
         If ``raising`` is set to False, no exception will be raised if the
         environment variable is missing.

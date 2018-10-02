@@ -51,7 +51,7 @@ def pytest_configure(config):
         "results in a True value.  Evaluation happens within the "
         "module global context. Example: skipif('sys.platform == \"win32\"') "
         "skips the test if we are on the win32 platform. see "
-        "http://pytest.org/latest/skipping.html",
+        "https://docs.pytest.org/en/latest/skipping.html",
     )
     config.addinivalue_line(
         "markers",
@@ -61,7 +61,7 @@ def pytest_configure(config):
         "and run=False if you don't even want to execute the test function. "
         "If only specific exception(s) are expected, you can list them in "
         "raises, and if the test fails in other ways, it will be reported as "
-        "a true failure. See http://pytest.org/latest/skipping.html",
+        "a true failure. See https://docs.pytest.org/en/latest/skipping.html",
     )
 
 
@@ -157,9 +157,11 @@ def pytest_runtest_makereport(item, call):
             else:
                 rep.outcome = "passed"
                 rep.wasxfail = explanation
-    elif getattr(item, "_skipped_by_mark", False) and rep.skipped and type(
-        rep.longrepr
-    ) is tuple:
+    elif (
+        getattr(item, "_skipped_by_mark", False)
+        and rep.skipped
+        and type(rep.longrepr) is tuple
+    ):
         # skipped by mark.skipif; change the location of the failure
         # to point to the item definition, otherwise it will display
         # the location of where the skip exception was raised within pytest
@@ -274,7 +276,6 @@ def show_skipped(terminalreporter, lines):
 
 
 def shower(stat, format):
-
     def show_(terminalreporter, lines):
         return show_simple(terminalreporter, lines, stat, format)
 

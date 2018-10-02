@@ -1,14 +1,13 @@
 # encoding: utf-8
 from __future__ import absolute_import, division, print_function
 import sys
-import _pytest._code
+import textwrap
 from _pytest.compat import MODULE_NOT_FOUND_ERROR
 from _pytest.doctest import DoctestItem, DoctestModule, DoctestTextfile
 import pytest
 
 
 class TestDoctests(object):
-
     def test_collect_testtextfile(self, testdir):
         w = testdir.maketxtfile(whatever="")
         checkfile = testdir.maketxtfile(
@@ -259,16 +258,16 @@ class TestDoctests(object):
 
     def test_doctest_linedata_missing(self, testdir):
         testdir.tmpdir.join("hello.py").write(
-            _pytest._code.Source(
+            textwrap.dedent(
+                """\
+                class Fun(object):
+                    @property
+                    def test(self):
+                        '''
+                        >>> a = 1
+                        >>> 1/0
+                        '''
                 """
-            class Fun(object):
-                @property
-                def test(self):
-                    '''
-                    >>> a = 1
-                    >>> 1/0
-                    '''
-            """
             )
         )
         result = testdir.runpytest("--doctest-modules")
@@ -301,10 +300,10 @@ class TestDoctests(object):
 
     def test_doctest_unex_importerror_with_module(self, testdir):
         testdir.tmpdir.join("hello.py").write(
-            _pytest._code.Source(
+            textwrap.dedent(
+                """\
+                import asdalsdkjaslkdjasd
                 """
-            import asdalsdkjaslkdjasd
-        """
             )
         )
         testdir.maketxtfile(
@@ -340,27 +339,27 @@ class TestDoctests(object):
     def test_doctestmodule_external_and_issue116(self, testdir):
         p = testdir.mkpydir("hello")
         p.join("__init__.py").write(
-            _pytest._code.Source(
+            textwrap.dedent(
+                """\
+                def somefunc():
+                    '''
+                        >>> i = 0
+                        >>> i + 1
+                        2
+                    '''
                 """
-            def somefunc():
-                '''
-                    >>> i = 0
-                    >>> i + 1
-                    2
-                '''
-        """
             )
         )
         result = testdir.runpytest(p, "--doctest-modules")
         result.stdout.fnmatch_lines(
             [
-                "004 *>>> i = 0",
-                "005 *>>> i + 1",
+                "003 *>>> i = 0",
+                "004 *>>> i + 1",
                 "*Expected:",
                 "*    2",
                 "*Got:",
                 "*    1",
-                "*:5: DocTestFailure",
+                "*:4: DocTestFailure",
             ]
         )
 
@@ -655,6 +654,22 @@ class TestDoctests(object):
         result = testdir.runpytest(p, "--doctest-modules")
         result.stdout.fnmatch_lines(["* 1 passed *"])
 
+    def test_print_unicode_value(self, testdir):
+        """
+        Test case for issue 3583: Printing Unicode in doctest under Python 2.7
+        doesn't work
+        """
+        p = testdir.maketxtfile(
+            test_print_unicode_value=r"""
+            Here is a doctest::
+
+                >>> print(u'\xE5\xE9\xEE\xF8\xFC')
+                åéîøü
+        """
+        )
+        result = testdir.runpytest(p)
+        result.stdout.fnmatch_lines(["* 1 passed *"])
+
     def test_reportinfo(self, testdir):
         """
         Test case to make sure that DoctestItem.reportinfo() returns lineno.
@@ -707,7 +722,6 @@ class TestDoctests(object):
 
 
 class TestLiterals(object):
-
     @pytest.mark.parametrize("config_mode", ["ini", "comment"])
     def test_allow_unicode(self, testdir, config_mode):
         """Test that doctests which output unicode work in all python versions
@@ -825,7 +839,6 @@ class TestDoctestSkips(object):
 
     @pytest.fixture(params=["text", "module"])
     def makedoctest(self, testdir, request):
-
         def makeit(doctest):
             mode = request.param
             if mode == "text":
@@ -1106,7 +1119,6 @@ class TestDoctestNamespaceFixture(object):
 
 
 class TestDoctestReportingOption(object):
-
     def _run_doctest_report(self, testdir, format):
         testdir.makepyfile(
             """

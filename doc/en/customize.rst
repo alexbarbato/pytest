@@ -32,7 +32,7 @@ Here's a summary what ``pytest`` uses ``rootdir`` for:
   class name, function name and parametrization (if any).
 
 * Is used by plugins as a stable location to store project/test run specific information;
-  for example, the internal :ref:`cache <cache>` plugin creates a ``.cache`` subdirectory
+  for example, the internal :ref:`cache <cache>` plugin creates a ``.pytest_cache`` subdirectory
   in ``rootdir`` to store its cross-test run state.
 
 Important to emphasize that ``rootdir`` is **NOT** used to modify ``sys.path``/``PYTHONPATH`` or
@@ -139,7 +139,7 @@ line options while the environment is in use::
 
 Here's how the command-line is built in the presence of ``addopts`` or the environment variable::
 
-    <pytest.ini:addopts> $PYTEST_ADDOTPS <extra command-line arguments>
+    <pytest.ini:addopts> $PYTEST_ADDOPTS <extra command-line arguments>
 
 So if the user executes in the command-line::
 

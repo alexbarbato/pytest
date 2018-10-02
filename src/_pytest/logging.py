@@ -6,6 +6,7 @@ from contextlib import closing, contextmanager
 import re
 import six
 
+from _pytest.compat import dummy_context_manager
 from _pytest.config import create_terminal_writer
 import pytest
 import py
@@ -270,6 +271,22 @@ class LogCaptureFixture(object):
         """
         return [(r.name, r.levelno, r.getMessage()) for r in self.records]
 
+    @property
+    def messages(self):
+        """Returns a list of format-interpolated log messages.
+
+        Unlike 'records', which contains the format string and parameters for interpolation, log messages in this list
+        are all interpolated.
+        Unlike 'text', which contains the output from the handler, log messages in this list are unadorned with
+        levels, timestamps, etc, making exact comparisions more reliable.
+
+        Note that traceback or stack info (from :func:`logging.exception` or the `exc_info` or `stack_info` arguments
+        to the logging functions) is not included, as this is added by the formatter in the handler.
+
+        .. versionadded:: 3.7
+        """
+        return [r.getMessage() for r in self.records]
+
     def clear(self):
         """Reset the list of log records and the captured log text."""
         self.handler.reset()
@@ -353,11 +370,6 @@ def pytest_configure(config):
     config.pluginmanager.register(LoggingPlugin(config), "logging-plugin")
 
 
-@contextmanager
-def _dummy_context_manager():
-    yield
-
-
 class LoggingPlugin(object):
     """Attaches to the logging module and captures log messages for each test.
     """
@@ -392,7 +404,9 @@ class LoggingPlugin(object):
                 config, "log_file_date_format", "log_date_format"
             )
             # Each pytest runtests session will write to a clean logfile
-            self.log_file_handler = logging.FileHandler(log_file, mode="w")
+            self.log_file_handler = logging.FileHandler(
+                log_file, mode="w", encoding="UTF-8"
+            )
             log_file_formatter = logging.Formatter(
                 log_file_format, datefmt=log_file_date_format
             )
@@ -409,9 +423,7 @@ class LoggingPlugin(object):
         """
         return self._config.getoption(
             "--log-cli-level"
-        ) is not None or self._config.getini(
-            "log_cli"
-        )
+        ) is not None or self._config.getini("log_cli")
 
     @contextmanager
     def _runtest_for(self, item, when):
@@ -433,8 +445,8 @@ class LoggingPlugin(object):
             try:
                 yield  # run test
             finally:
-                del item.catch_log_handler
                 if when == "teardown":
+                    del item.catch_log_handler
                     del item.catch_log_handlers
 
             if self.print_logs:
@@ -521,7 +533,7 @@ class LoggingPlugin(object):
                 log_cli_handler, formatter=log_cli_formatter, level=log_cli_level
             )
         else:
-            self.live_logs_context = _dummy_context_manager()
+            self.live_logs_context = dummy_context_manager()
 
 
 class _LiveLoggingStreamHandler(logging.StreamHandler):
@@ -556,9 +568,12 @@ class _LiveLoggingStreamHandler(logging.StreamHandler):
             self._test_outcome_written = False
 
     def emit(self, record):
-        if self.capture_manager is not None:
-            self.capture_manager.suspend_global_capture()
-        try:
+        ctx_manager = (
+            self.capture_manager.global_and_fixture_disabled()
+            if self.capture_manager
+            else dummy_context_manager()
+        )
+        with ctx_manager:
             if not self._first_record_emitted:
                 self.stream.write("\n")
                 self._first_record_emitted = True
@@ -570,6 +585,3 @@ class _LiveLoggingStreamHandler(logging.StreamHandler):
                 self.stream.section("live log " + self._when, sep="-", bold=True)
                 self._section_name_shown = True
             logging.StreamHandler.emit(self, record)
-        finally:
-            if self.capture_manager is not None:
-                self.capture_manager.resume_global_capture()

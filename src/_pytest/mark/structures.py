@@ -1,13 +1,14 @@
 import inspect
 import warnings
 from collections import namedtuple
+from functools import reduce
 from operator import attrgetter
 
 import attr
 
 from ..deprecated import MARK_PARAMETERSET_UNPACKING, MARK_INFO_ATTRIBUTE
 from ..compat import NOTSET, getfslineno, MappingMixin
-from six.moves import map, reduce
+from six.moves import map
 
 
 EMPTY_PARAMETERSET_OPTION = "empty_parameter_set_mark"
@@ -24,9 +25,10 @@ def alias(name, warning=None):
 
 
 def istestfunc(func):
-    return hasattr(func, "__call__") and getattr(
-        func, "__name__", "<lambda>"
-    ) != "<lambda>"
+    return (
+        hasattr(func, "__call__")
+        and getattr(func, "__name__", "<lambda>") != "<lambda>"
+    )
 
 
 def get_empty_parameterset_mark(config, argnames, func):
@@ -39,18 +41,20 @@ def get_empty_parameterset_mark(config, argnames, func):
         raise LookupError(requested_mark)
     fs, lineno = getfslineno(func)
     reason = "got empty parameter set %r, function %s at %s:%d" % (
-        argnames, func.__name__, fs, lineno
+        argnames,
+        func.__name__,
+        fs,
+        lineno,
     )
     return mark(reason=reason)
 
 
 class ParameterSet(namedtuple("ParameterSet", "values, marks, id")):
-
     @classmethod
     def param(cls, *values, **kw):
         marks = kw.pop("marks", ())
         if isinstance(marks, MarkDecorator):
-            marks = marks,
+            marks = (marks,)
         else:
             assert isinstance(marks, (tuple, list, set))
 
@@ -61,7 +65,7 @@ class ParameterSet(namedtuple("ParameterSet", "values, marks, id")):
         return cls(values, marks, id_)
 
     @classmethod
-    def extract_from(cls, parameterset, legacy_force_tuple=False):
+    def extract_from(cls, parameterset, belonging_definition, legacy_force_tuple=False):
         """
         :param parameterset:
             a legacy style parameterset that may or may not be a tuple,
@@ -71,6 +75,7 @@ class ParameterSet(namedtuple("ParameterSet", "values, marks, id")):
             enforce tuple wrapping so single argument tuple values
             don't get decomposed and break tests
 
+        :param belonging_definition: the item that we will be extracting the parameters from.
         """
 
         if isinstance(parameterset, cls):
@@ -87,27 +92,43 @@ class ParameterSet(namedtuple("ParameterSet", "values, marks, id")):
             argval = argval.args[-1]
         assert not isinstance(argval, ParameterSet)
         if legacy_force_tuple:
-            argval = argval,
+            argval = (argval,)
 
-        if newmarks:
-            warnings.warn(MARK_PARAMETERSET_UNPACKING)
+        if newmarks and belonging_definition is not None:
+            belonging_definition.warn(MARK_PARAMETERSET_UNPACKING)
 
         return cls(argval, marks=newmarks, id=None)
 
     @classmethod
-    def _for_parametrize(cls, argnames, argvalues, func, config):
+    def _for_parametrize(cls, argnames, argvalues, func, config, function_definition):
         if not isinstance(argnames, (tuple, list)):
             argnames = [x.strip() for x in argnames.split(",") if x.strip()]
             force_tuple = len(argnames) == 1
         else:
             force_tuple = False
         parameters = [
-            ParameterSet.extract_from(x, legacy_force_tuple=force_tuple)
+            ParameterSet.extract_from(
+                x,
+                legacy_force_tuple=force_tuple,
+                belonging_definition=function_definition,
+            )
             for x in argvalues
         ]
         del argvalues
 
-        if not parameters:
+        if parameters:
+            # check all parameter sets have the correct number of values
+            for param in parameters:
+                if len(param.values) != len(argnames):
+                    raise ValueError(
+                        'In "parametrize" the number of values ({}) must be '
+                        "equal to the number of names ({})".format(
+                            param.values, argnames
+                        )
+                    )
+        else:
+            # empty parameter set (likely computed at runtime): create a single
+            # parameter set with NOSET values, with the "empty parameter set" mark applied to it
             mark = get_empty_parameterset_mark(config, argnames, func)
             parameters.append(
                 ParameterSet(values=(NOTSET,) * len(argnames), marks=[mark], id=None)
@@ -120,9 +141,9 @@ class Mark(object):
     #: name of the mark
     name = attr.ib(type=str)
     #: positional arguments of the mark decorator
-    args = attr.ib(type="List[object]")
+    args = attr.ib()  # type: List[object]
     #: keyword arguments of the mark decorator
-    kwargs = attr.ib(type="Dict[str, object]")
+    kwargs = attr.ib()  # type: Dict[str, object]
 
     def combined_with(self, other):
         """
@@ -221,9 +242,18 @@ def get_unpacked_marks(obj):
     obtain the unpacked marks that are stored on an object
     """
     mark_list = getattr(obj, "pytestmark", [])
-
     if not isinstance(mark_list, list):
         mark_list = [mark_list]
+    return normalize_mark_list(mark_list)
+
+
+def normalize_mark_list(mark_list):
+    """
+    normalizes marker decorating helpers to mark objects
+
+    :type mark_list: List[Union[Mark, Markdecorator]]
+    :rtype: List[Mark]
+    """
     return [getattr(mark, "mark", mark) for mark in mark_list]  # unpack MarkDecorator
 
 
@@ -246,7 +276,7 @@ def store_legacy_markinfo(func, mark):
     if holder is None:
         holder = MarkInfo.for_mark(mark)
         setattr(func, mark.name, holder)
-    else:
+    elif isinstance(holder, MarkInfo):
         holder.add_mark(mark)
 
 
@@ -281,7 +311,7 @@ def _marked(func, mark):
 class MarkInfo(object):
     """ Marking object created by :class:`MarkDecorator` instances. """
 
-    _marks = attr.ib(convert=list)
+    _marks = attr.ib(converter=list)
 
     @_marks.validator
     def validate_marks(self, attribute, value):
@@ -332,6 +362,7 @@ class MarkGenerator(object):
 
     will set a 'slowtest' :class:`MarkInfo` object
     on the ``test_function`` object. """
+
     _config = None
 
     def __getattr__(self, name):
@@ -361,7 +392,6 @@ MARK_GEN = MarkGenerator()
 
 
 class NodeKeywords(MappingMixin):
-
     def __init__(self, node):
         self.node = node
         self.parent = node.parent
@@ -408,6 +438,7 @@ class NodeMarkers(object):
         unstable api
 
     """
+
     own_markers = attr.ib(default=attr.Factory(list))
 
     def update(self, add_markers):

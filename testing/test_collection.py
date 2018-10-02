@@ -1,14 +1,13 @@
 from __future__ import absolute_import, division, print_function
 import pprint
 import sys
+import textwrap
 import pytest
 
-import _pytest._code
 from _pytest.main import Session, EXIT_NOTESTSCOLLECTED, _in_venv
 
 
 class TestCollector(object):
-
     def test_collect_versus_item(self):
         from pytest import Collector, Item
 
@@ -115,7 +114,6 @@ class TestCollector(object):
 
 
 class TestCollectFS(object):
-
     def test_ignored_certain_directories(self, testdir):
         tmpdir = testdir.tmpdir
         tmpdir.ensure("build", "test_notfound.py")
@@ -253,12 +251,10 @@ class TestCollectFS(object):
 
 
 class TestCollectPluginHookRelay(object):
-
     def test_pytest_collect_file(self, testdir):
         wascalled = []
 
         class Plugin(object):
-
             def pytest_collect_file(self, path, parent):
                 if not path.basename.startswith("."):
                     # Ignore hidden files, e.g. .testmondata.
@@ -273,7 +269,6 @@ class TestCollectPluginHookRelay(object):
         wascalled = []
 
         class Plugin(object):
-
             def pytest_collect_directory(self, path, parent):
                 wascalled.append(path.basename)
 
@@ -285,7 +280,6 @@ class TestCollectPluginHookRelay(object):
 
 
 class TestPrunetraceback(object):
-
     def test_custom_repr_failure(self, testdir):
         p = testdir.makepyfile(
             """
@@ -335,7 +329,6 @@ class TestPrunetraceback(object):
 
 
 class TestCustomConftests(object):
-
     def test_ignore_collect_path(self, testdir):
         testdir.makeconftest(
             """
@@ -437,7 +430,6 @@ class TestCustomConftests(object):
 
 
 class TestSession(object):
-
     def test_parsearg(self, testdir):
         p = testdir.makepyfile("def test_func(): pass")
         subdir = testdir.mkdir("sub")
@@ -634,7 +626,6 @@ class TestSession(object):
 
 
 class Test_getinitialnodes(object):
-
     def test_global_file(self, testdir, tmpdir):
         x = tmpdir.ensure("x.py")
         with tmpdir.as_cwd():
@@ -647,6 +638,10 @@ class Test_getinitialnodes(object):
             assert col.config is config
 
     def test_pkgfile(self, testdir):
+        """Verify nesting when a module is within a package.
+        The parent chain should match: Module<x.py> -> Package<subdir> -> Session.
+            Session's parent should always be None.
+        """
         tmpdir = testdir.tmpdir
         subdir = tmpdir.join("subdir")
         x = subdir.ensure("x.py")
@@ -654,15 +649,17 @@ class Test_getinitialnodes(object):
         with subdir.as_cwd():
             config = testdir.parseconfigure(x)
         col = testdir.getnode(config, x)
-        assert isinstance(col, pytest.Module)
         assert col.name == "x.py"
-        assert col.parent.parent is None
+        assert isinstance(col, pytest.Module)
+        assert isinstance(col.parent, pytest.Package)
+        assert isinstance(col.parent.parent, pytest.Session)
+        # session is batman (has no parents)
+        assert col.parent.parent.parent is None
         for col in col.listchain():
             assert col.config is config
 
 
 class Test_genitems(object):
-
     def test_check_collect_hashes(self, testdir):
         p = testdir.makepyfile(
             """
@@ -776,7 +773,6 @@ def test_matchnodes_two_collections_same_file(testdir):
 
 
 class TestNodekeywords(object):
-
     def test_no_under(self, testdir):
         modcol = testdir.getmodulecol(
             """
@@ -915,15 +911,15 @@ def test_continue_on_collection_errors_maxfail(testdir):
 
 def test_fixture_scope_sibling_conftests(testdir):
     """Regression test case for https://github.com/pytest-dev/pytest/issues/2836"""
-    foo_path = testdir.mkpydir("foo")
+    foo_path = testdir.mkdir("foo")
     foo_path.join("conftest.py").write(
-        _pytest._code.Source(
+        textwrap.dedent(
+            """\
+            import pytest
+            @pytest.fixture
+            def fix():
+                return 1
             """
-        import pytest
-        @pytest.fixture
-        def fix():
-            return 1
-    """
         )
     )
     foo_path.join("test_foo.py").write("def test_foo(fix): assert fix == 1")
@@ -940,5 +936,19 @@ def test_fixture_scope_sibling_conftests(testdir):
             "*ERROR at setup of test_food*",
             "E*fixture 'fix' not found",
             "*1 passed, 1 error*",
+        ]
+    )
+
+
+def test_collect_init_tests(testdir):
+    """Check that we collect files from __init__.py files when they patch the 'python_files' (#3773)"""
+    p = testdir.copy_example("collect/collect_init_tests")
+    result = testdir.runpytest(p, "--collect-only")
+    result.stdout.fnmatch_lines(
+        [
+            "*<Module '__init__.py'>",
+            "*<Function 'test_init'>",
+            "*<Module 'test_foo.py'>",
+            "*<Function 'test_foo'>",
         ]
     )

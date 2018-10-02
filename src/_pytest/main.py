@@ -343,7 +343,6 @@ def _patched_find_module():
 
 
 class FSHookProxy(object):
-
     def __init__(self, fspath, pm, remove_mods):
         self.fspath = fspath
         self.pm = pm
@@ -361,6 +360,7 @@ class NoMatch(Exception):
 
 class Interrupted(KeyboardInterrupt):
     """ signals an interrupted test run. """
+
     __module__ = "builtins"  # for py3
 
 
@@ -383,6 +383,9 @@ class Session(nodes.FSCollector):
         self.trace = config.trace.root.get("collection")
         self._norecursepatterns = config.getini("norecursedirs")
         self.startdir = py.path.local()
+        self._initialpaths = frozenset()
+        # Keep track of any collected nodes in here, so we don't duplicate fixtures
+        self._node_cache = {}
 
         self.config.pluginmanager.register(self, name="session")
 
@@ -439,13 +442,14 @@ class Session(nodes.FSCollector):
         self.trace("perform_collect", self, args)
         self.trace.root.indent += 1
         self._notfound = []
-        self._initialpaths = set()
+        initialpaths = []
         self._initialparts = []
         self.items = items = []
         for arg in args:
             parts = self._parsearg(arg)
             self._initialparts.append(parts)
-            self._initialpaths.add(parts[0])
+            initialpaths.append(parts[0])
+        self._initialpaths = frozenset(initialpaths)
         rep = collect_one_node(self)
         self.ihook.pytest_collectreport(report=rep)
         self.trace.root.indent -= 1
@@ -480,19 +484,66 @@ class Session(nodes.FSCollector):
             self.trace.root.indent -= 1
 
     def _collect(self, arg):
+        from _pytest.python import Package
+
         names = self._parsearg(arg)
-        path = names.pop(0)
-        if path.check(dir=1):
+        argpath = names.pop(0)
+        paths = []
+
+        root = self
+        # Start with a Session root, and delve to argpath item (dir or file)
+        # and stack all Packages found on the way.
+        # No point in finding packages when collecting doctests
+        if not self.config.option.doctestmodules:
+            for parent in argpath.parts():
+                pm = self.config.pluginmanager
+                if pm._confcutdir and pm._confcutdir.relto(parent):
+                    continue
+
+                if parent.isdir():
+                    pkginit = parent.join("__init__.py")
+                    if pkginit.isfile():
+                        if pkginit in self._node_cache:
+                            root = self._node_cache[pkginit][0]
+                        else:
+                            col = root._collectfile(pkginit)
+                            if col:
+                                if isinstance(col[0], Package):
+                                    root = col[0]
+                                # always store a list in the cache, matchnodes expects it
+                                self._node_cache[root.fspath] = [root]
+
+        # If it's a directory argument, recurse and look for any Subpackages.
+        # Let the Package collector deal with subnodes, don't collect here.
+        if argpath.check(dir=1):
             assert not names, "invalid arg %r" % (arg,)
-            for path in path.visit(
+            for path in argpath.visit(
                 fil=lambda x: x.check(file=1), rec=self._recurse, bf=True, sort=True
             ):
-                for x in self._collectfile(path):
-                    yield x
+                pkginit = path.dirpath().join("__init__.py")
+                if pkginit.exists() and not any(x in pkginit.parts() for x in paths):
+                    for x in root._collectfile(pkginit):
+                        yield x
+                        paths.append(x.fspath.dirpath())
+
+                if not any(x in path.parts() for x in paths):
+                    for x in root._collectfile(path):
+                        if (type(x), x.fspath) in self._node_cache:
+                            yield self._node_cache[(type(x), x.fspath)]
+                        else:
+                            self._node_cache[(type(x), x.fspath)] = x
+                            yield x
         else:
-            assert path.check(file=1)
-            for x in self.matchnodes(self._collectfile(path), names):
-                yield x
+            assert argpath.check(file=1)
+
+            if argpath in self._node_cache:
+                col = self._node_cache[argpath]
+            else:
+                col = root._collectfile(argpath)
+                if col:
+                    self._node_cache[argpath] = col
+            for y in self.matchnodes(col, names):
+                yield y
 
     def _collectfile(self, path):
         ihook = self.gethookproxy(path)
@@ -516,7 +567,6 @@ class Session(nodes.FSCollector):
         """Convert a dotted module name to path.
 
         """
-
         try:
             with _patched_find_module():
                 loader = pkgutil.find_loader(x)
@@ -577,7 +627,12 @@ class Session(nodes.FSCollector):
                     resultnodes.append(node)
                 continue
             assert isinstance(node, nodes.Collector)
-            rep = collect_one_node(node)
+            key = (type(node), node.nodeid)
+            if key in self._node_cache:
+                rep = self._node_cache[key]
+            else:
+                rep = collect_one_node(node)
+                self._node_cache[key] = rep
             if rep.passed:
                 has_matched = False
                 for x in rep.result:

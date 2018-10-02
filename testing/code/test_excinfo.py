@@ -4,9 +4,11 @@ from __future__ import absolute_import, division, print_function
 import operator
 import os
 import sys
+import textwrap
 import _pytest
 import py
 import pytest
+import six
 from _pytest._code.code import (
     ExceptionInfo,
     FormattedExcinfo,
@@ -65,7 +67,6 @@ def test_excinfo_simple():
 
 
 def test_excinfo_getstatement():
-
     def g():
         raise ValueError
 
@@ -112,7 +113,6 @@ def h():
 
 
 class TestTraceback_f_g_h(object):
-
     def setup_method(self, method):
         try:
             h()
@@ -149,7 +149,7 @@ class TestTraceback_f_g_h(object):
                 except somenoname:
                     pass
             xyz()
-        """
+            """
         )
         try:
             exec(source.compile())
@@ -194,7 +194,6 @@ class TestTraceback_f_g_h(object):
         ],
     )
     def test_traceback_filter_selective(self, tracebackhide, matching):
-
         def f():
             #
             raise ValueError
@@ -224,7 +223,6 @@ class TestTraceback_f_g_h(object):
             assert len(ntraceback) == len(traceback) - 1
 
     def test_traceback_recursion_index(self):
-
         def f(n):
             if n < 10:
                 n += 1
@@ -236,7 +234,6 @@ class TestTraceback_f_g_h(object):
         assert recindex == 3
 
     def test_traceback_only_specific_recursion_errors(self, monkeypatch):
-
         def f(n):
             if n == 0:
                 raise RuntimeError("hello")
@@ -248,7 +245,6 @@ class TestTraceback_f_g_h(object):
         assert "RuntimeError: hello" in str(repr.reprcrash)
 
     def test_traceback_no_recursion_index(self):
-
         def do_stuff():
             raise RuntimeError
 
@@ -256,7 +252,7 @@ class TestTraceback_f_g_h(object):
             import sys
 
             exc, val, tb = sys.exc_info()
-            py.builtin._reraise(exc, val, tb)
+            six.reraise(exc, val, tb)
 
         def f(n):
             try:
@@ -274,7 +270,7 @@ class TestTraceback_f_g_h(object):
         decorator = pytest.importorskip("decorator").decorator
 
         def log(f, *k, **kw):
-            print("%s %s" % (k, kw))
+            print("{} {}".format(k, kw))
             f(*k, **kw)
 
         log = decorator(log)
@@ -288,7 +284,6 @@ class TestTraceback_f_g_h(object):
         assert excinfo.traceback.recursionindex() is None
 
     def test_traceback_getcrashentry(self):
-
         def i():
             __tracebackhide__ = True
             raise ValueError
@@ -312,7 +307,6 @@ class TestTraceback_f_g_h(object):
         assert entry.frame.code.name == "h"
 
     def test_traceback_getcrashentry_empty(self):
-
         def g():
             __tracebackhide__ = True
             raise ValueError
@@ -429,12 +423,10 @@ def test_match_raises_error(testdir):
 
 
 class TestFormattedExcinfo(object):
-
     @pytest.fixture
     def importasmod(self, request):
-
         def importasmod(source):
-            source = _pytest._code.Source(source)
+            source = textwrap.dedent(source)
             tmpdir = request.getfixturevalue("tmpdir")
             modpath = tmpdir.join("mod.py")
             tmpdir.ensure("__init__.py")
@@ -458,10 +450,10 @@ class TestFormattedExcinfo(object):
     def test_repr_source(self):
         pr = FormattedExcinfo()
         source = _pytest._code.Source(
-            """
+            """\
             def f(x):
                 pass
-        """
+            """
         ).strip()
         pr.flow_marker = "|"
         lines = pr.get_source(source, 0)
@@ -519,7 +511,6 @@ raise ValueError()
         pr = FormattedExcinfo()
 
         class FakeCode(object):
-
             class raw(object):
                 co_filename = "?"
 
@@ -537,7 +528,6 @@ raise ValueError()
             f_globals = {}
 
         class FakeTracebackEntry(_pytest._code.Traceback.Entry):
-
             def __init__(self, tb, excinfo=None):
                 self.lineno = 5 + 3
 
@@ -590,6 +580,18 @@ raise ValueError()
         assert reprlocals.lines[1] == "x          = 3"
         assert reprlocals.lines[2] == "y          = 5"
         assert reprlocals.lines[3] == "z          = 7"
+
+    def test_repr_local_truncated(self):
+        loc = {"l": [i for i in range(10)]}
+        p = FormattedExcinfo(showlocals=True)
+        truncated_reprlocals = p.repr_locals(loc)
+        assert truncated_reprlocals.lines
+        assert truncated_reprlocals.lines[0] == "l          = [0, 1, 2, 3, 4, 5, ...]"
+
+        q = FormattedExcinfo(showlocals=True, truncate_locals=False)
+        full_reprlocals = q.repr_locals(loc)
+        assert full_reprlocals.lines
+        assert full_reprlocals.lines[0] == "l          = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]"
 
     def test_repr_tracebackentry_lines(self, importasmod):
         mod = importasmod(
@@ -882,12 +884,11 @@ raise ValueError()
         from _pytest._code.code import TerminalRepr
 
         class MyRepr(TerminalRepr):
-
             def toterminal(self, tw):
-                tw.line(py.builtin._totext("я", "utf-8"))
+                tw.line(u"я")
 
-        x = py.builtin._totext(MyRepr())
-        assert x == py.builtin._totext("я", "utf-8")
+        x = six.text_type(MyRepr())
+        assert x == u"я"
 
     def test_toterminal_long(self, importasmod):
         mod = importasmod(
@@ -1266,6 +1267,50 @@ raise ValueError()
             ]
         )
 
+    @pytest.mark.skipif("sys.version_info[0] < 3")
+    def test_exc_chain_repr_cycle(self, importasmod):
+        mod = importasmod(
+            """
+            class Err(Exception):
+                pass
+            def fail():
+                return 0 / 0
+            def reraise():
+                try:
+                    fail()
+                except ZeroDivisionError as e:
+                    raise Err() from e
+            def unreraise():
+                try:
+                    reraise()
+                except Err as e:
+                    raise e.__cause__
+        """
+        )
+        excinfo = pytest.raises(ZeroDivisionError, mod.unreraise)
+        r = excinfo.getrepr(style="short")
+        tw = TWMock()
+        r.toterminal(tw)
+        out = "\n".join(line for line in tw.lines if isinstance(line, str))
+        expected_out = textwrap.dedent(
+            """\
+            :13: in unreraise
+                reraise()
+            :10: in reraise
+                raise Err() from e
+            E   test_exc_chain_repr_cycle0.mod.Err
+
+            During handling of the above exception, another exception occurred:
+            :15: in unreraise
+                raise e.__cause__
+            :8: in reraise
+                fail()
+            :5: in fail
+                return 0 / 0
+            E   ZeroDivisionError: division by zero"""
+        )
+        assert out == expected_out
+
 
 @pytest.mark.parametrize("style", ["short", "long"])
 @pytest.mark.parametrize("encoding", [None, "utf8", "utf16"])
@@ -1303,7 +1348,6 @@ def test_exception_repr_extraction_error_on_recursion():
     """
 
     class numpy_like(object):
-
         def __eq__(self, other):
             if type(other) is numpy_like:
                 raise ValueError(
@@ -1343,7 +1387,6 @@ def test_no_recursion_index_on_recursion_error():
     try:
 
         class RecursionDepthError(object):
-
             def __getattr__(self, attr):
                 return getattr(self, "_" + attr)
 
